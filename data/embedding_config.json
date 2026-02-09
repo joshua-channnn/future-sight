@@ -1,0 +1,10 @@
+{
+  "pokemon_vocab_size": 508,
+  "move_vocab_size": 351,
+  "ability_vocab_size": 204,
+  "item_vocab_size": 63,
+  "pokemon_embed_dim": 64,
+  "move_embed_dim": 32,
+  "ability_embed_dim": 32,
+  "item_embed_dim": 16
+}
