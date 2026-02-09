@@ -71,7 +71,7 @@ EMBEDDING_LAYER_NAMES = [
 
 CONFIG = {
     "total_timesteps": 20_000_000,
-    "n_envs": 2,
+    "n_envs": 8,
 
     # === Differential LR (same as v17.2) ===
     "base_lr": 3e-5,
@@ -86,7 +86,7 @@ CONFIG = {
     "clip_range": 0.08,
     "n_epochs": 4,
     "batch_size": 1024,
-    "n_steps": 1024,
+    "n_steps": 256,
     "max_grad_norm": 0.5,
     "ent_coef": 0.06,              # Slightly higher for self-play diversity
     "vf_coef": 0.4375,
