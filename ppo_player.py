@@ -156,7 +156,7 @@ class PPOPlayerV17(Player):
 
         # Load weights
         temp_model.policy.load_state_dict(state_dict)
-        return temp_model.policy
+        return temp_model.policy.cpu()
 
     def choose_move(self, battle: AbstractBattle) -> BattleOrder:
         """Main decision method called by poke-env."""
