@@ -786,9 +786,17 @@ def create_training_env(config, opponent_manager: SelfPlayOpponentManager):
             multiprocessing.set_start_method("forkserver", force=True)
         except RuntimeError:
             pass
+        start_method = "forkserver"
+    else:
+        # Avoid forked event-loop deadlocks in poke-env
+        try:
+            multiprocessing.set_start_method("spawn", force=True)
+        except RuntimeError:
+            pass
+        start_method = "spawn"
     return SubprocVecEnv(
         [make_selfplay_env(i, config, opponent_manager) for i in range(n_envs)],
-        start_method="forkserver" if sys.platform == "darwin" else "fork",
+        start_method=start_method,
     )
 
 
