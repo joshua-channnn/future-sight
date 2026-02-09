@@ -628,11 +628,7 @@ def make_selfplay_env(env_idx: int, config: dict, opponent_manager: SelfPlayOppo
 
     For eval: always uses SimpleHeuristics (stable benchmark).
     """
-    def _init():
-        if not is_eval and sys.platform != "darwin":
-            import os
-            os.environ["CUDA_VISIBLE_DEVICES"] = ""
-        
+    def _init():        
         port = BASE_PORT + env_idx
         server_config = get_server_config(port)
         uid = uuid.uuid4().hex[:6]
