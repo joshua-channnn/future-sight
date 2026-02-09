@@ -629,8 +629,9 @@ def make_selfplay_env(env_idx: int, config: dict, opponent_manager: SelfPlayOppo
     For eval: always uses SimpleHeuristics (stable benchmark).
     """
     def _init():
-        import os
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""  # Hide GPU from subprocesses
+        if not is_eval and sys.platform != "darwin":
+            import os
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
         
         port = BASE_PORT + env_idx
         server_config = get_server_config(port)
@@ -880,8 +881,8 @@ def train(config=None, base_model=None):
 
     # Create environments
     print("Creating environments...")
-    train_env = create_training_env(config, opponent_manager)
-    eval_env = create_eval_env(config)
+    eval_env = create_eval_env(config)       # Create eval FIRST (keeps GPU)
+    train_env = create_training_env(config, opponent_manager)  # Then training (hides GPU in subprocesses)
     print(f"  Training: {config['n_envs']} envs (mixed opponents)")
     print(f"  Eval: 1 env (SimpleHeuristics only)")
 
