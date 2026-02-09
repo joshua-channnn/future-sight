@@ -169,8 +169,9 @@ class PPOPlayerV17(Player):
         action_mask = rl_env.get_action_mask(battle)
 
         # Predict action
-        obs_tensor = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
-        mask_tensor = torch.as_tensor(action_mask, dtype=torch.bool).unsqueeze(0)
+        device = next(self.policy.parameters()).device
+        obs_tensor = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)
+        mask_tensor = torch.as_tensor(action_mask, dtype=torch.bool).unsqueeze(0).to(device)
 
         with torch.no_grad():
             # Get action distribution from policy
