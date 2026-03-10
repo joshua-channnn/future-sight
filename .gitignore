@@ -1,4 +1,5 @@
-models/
+models/*
+!models/ppo_pokemon_6v6_v18.3_best.zip
 logs/
 __pycache__/
 *.pyc
