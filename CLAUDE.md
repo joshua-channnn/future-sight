@@ -16,6 +16,7 @@ built on poke-env and Stable-Baselines3 `MaskablePPO`. The goal is a stronger bo
 - `eval/ppo_test.py` (vs Random / SimpleHeuristics / another model) and `eval/foulplay_eval.py`.
 - `envs/rl_player_6v6.py`, `networks/embedding_extractor.py`, `networks/embedding_extractor_sp.py`:
   v17 code, kept only so v17 checkpoints still load.
+- `cloud/`: scripts for training on a Google Cloud VM (pack, set up, run with a stall guard, fetch).
 - Outside this repo: `../pokemon-showdown` (local Showdown server, a Feb 2026 fork) and
   `../foul-play` (Foul Play, locally patched, run via Docker).
 - `models/` is gitignored except `ppo_pokemon_6v6_v18.3_best.zip`, the current baseline.
@@ -41,4 +42,5 @@ built on poke-env and Stable-Baselines3 `MaskablePPO`. The goal is a stronger bo
 - `envs/`, the wrapper, or anything touching poke-env internals: `agent_docs/poke_env_gotchas.md`
 - training runs or hyperparameters: `agent_docs/training.md`
 - evaluation or Foul Play: `agent_docs/evaluation.md`
+- training on Google Cloud: `agent_docs/cloud.md`
 - architecture changes or deciding what to do next: `agent_docs/roadmap.md`
