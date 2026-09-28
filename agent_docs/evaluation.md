@@ -1,0 +1,29 @@
+# Evaluation
+
+## Against Random, SimpleHeuristics or another model
+`python3 -m eval.ppo_test --model models/X --opponents simple --battles 1000 --port 8123`
+- `--opponents` is `random`, `simple`, `model` (needs `--opp-model models/Y`) or `all`.
+- The architecture is detected from the checkpoint, and wins are counted with `battle.won`.
+- The default port is 8004, which a running training job uses for its eval env; pass `--port`.
+
+## How many games
+95% CI ≈ 1.96·sqrt(p(1−p)/n). At p ≈ 0.65 that's ±6.6 points for 200 games, ±4.7 for 400 and
+±3.0 for 1,000. Detecting a 3-point gain takes about 3,800 games per model, or about 2,200
+head-to-head games against the previous model.
+
+## Against Foul Play
+Full steps are in the docstring of `eval/foulplay_eval.py`. In short: start Docker Desktop, build
+the image in `../foul-play`, run the container in `accept_challenge` mode with a username that
+isn't registered on the main Showdown server, then run the script. A game takes about 11 seconds
+at Foul Play's default search settings.
+- The script challenges one game at a time: `Player.send_challenges(n)` sends the next challenge
+  while a battle is still running, and Foul Play ignores it, which deadlocks.
+- Foul Play targets current Showdown. Against this Feb 2026 fork it needs the local patches in
+  `../foul-play`: request/log reordering in `fp/websocket_client.py` and the Snow -> Snowscape
+  rename in `fp/battle/protocol.py`. If it crashes on another mismatch, running it against an
+  up-to-date Showdown server is cleaner than adding more patches.
+
+## Reference points
+- v18.3_best (true wins): see the README's Performance table. Against Foul Play it won 2 of 10,
+  too few games to say more than that Foul Play is much stronger.
+- Public ladder: Jaxcalibur peaked at 2557 Elo (#1, Aug 2026); Foul Play peaked at 2341 Elo / 88% GXE.

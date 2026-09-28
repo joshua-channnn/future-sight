@@ -20,6 +20,7 @@ ARCH_REGISTRY = {
         "extractor_class": "V17FeatureExtractor",
         "rl_env_module": "envs.rl_player_6v6",
         "rl_env_class": "RL6v6PlayerV17",
+        "obs_size": 640,
     },
     700: {
         "name": "v17.3sp",
@@ -27,6 +28,7 @@ ARCH_REGISTRY = {
         "extractor_class": "V17SPFeatureExtractor",
         "rl_env_module": "envs.rl_player_6v6",
         "rl_env_class": "RL6v6PlayerV17",
+        "obs_size": 640,
     },
     725: {
         "name": "v18",
@@ -34,12 +36,14 @@ ARCH_REGISTRY = {
         "extractor_class": "V18FeatureExtractor",
         "rl_env_module": "envs.rl_player_6v6_v18",
         "rl_env_class": "RL6v6PlayerV18",
+        "obs_size": 677,
     },
 }
 
 
 def _detect_architecture(state_dict):
-    for prefix in ["features_extractor", "pi_features_extractor"]:
+    """Detect model architecture from the saved state dict's final MLP input size."""
+    for prefix in ["features_extractor", "pi_features_extractor", "vf_features_extractor"]:
         ln_key = f"{prefix}.final_mlp.0.weight"
         if ln_key in state_dict:
             return state_dict[ln_key].shape[0]
@@ -160,14 +164,9 @@ class PPOPlayer(Player):
 
     def _predict_action(self, battle):
         """Core prediction logic shared by sync and async paths."""
+        # Same mask as training; extra blocks here would make this player differ from the policy
         obs = self._rl_env.embed_battle(battle)
         mask = self._rl_env.get_action_mask(battle)
-
-        if battle.turn < 2:
-            tera_mask_backup = mask[4:8].copy()
-            mask[4:8] = 0.0
-            if mask.sum() == 0:
-                mask[4:8] = tera_mask_backup
 
         obs_vec = np.expand_dims(obs, axis=0)
         mask_vec = np.expand_dims(mask.astype(bool), axis=0)
@@ -200,6 +199,10 @@ class PPOPlayer(Player):
     def _sync_choose_move(self, battle: AbstractBattle) -> BattleOrder:
         """Synchronous move selection for use as training opponent.
         State is already current when called through SingleAgentWrapper."""
+        if getattr(battle, "_wait", False):
+            # SingleAgentWrapper asks every step, even when the server needs nothing from us
+            # (e.g. the other side's forced switch); don't record a phantom action.
+            return DefaultBattleOrder()
         return self._predict_action(battle)
 
     async def _async_choose_move(self, battle: AbstractBattle) -> BattleOrder:

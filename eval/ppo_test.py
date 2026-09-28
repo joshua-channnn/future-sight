@@ -4,7 +4,6 @@ import uuid
 import argparse
 import zipfile
 import io
-import importlib
 import numpy as np
 from collections import defaultdict
 
@@ -20,50 +19,7 @@ from poke_env.ps_client import AccountConfiguration
 from poke_env.ps_client.server_configuration import ServerConfiguration
 
 from envs.wrappers import MaskablePokeEnvWrapper
-from players.ppo_player import PPOPlayer
-
-
-ARCH_REGISTRY = {
-    444: {
-        "name": "v17.2",
-        "extractor_module": "networks.embedding_extractor",
-        "extractor_class": "V17FeatureExtractor",
-        "rl_env_module": "envs.rl_player_6v6",
-        "rl_env_class": "RL6v6PlayerV17",
-        "obs_size": 640,
-    },
-    700: {
-        "name": "v17.3sp",
-        "extractor_module": "networks.embedding_extractor_sp",
-        "extractor_class": "V17SPFeatureExtractor",
-        "rl_env_module": "envs.rl_player_6v6",
-        "rl_env_class": "RL6v6PlayerV17",
-        "obs_size": 640,
-    },
-    725: {
-        "name": "v18",
-        "extractor_module": "networks.embedding_extractor_v18",
-        "extractor_class": "V18FeatureExtractor",
-        "rl_env_module": "envs.rl_player_6v6_v18",
-        "rl_env_class": "RL6v6PlayerV18",
-        "obs_size": 677,
-    },
-}
-
-
-def _detect_architecture(state_dict):
-    """Detect model architecture from saved state dict by checking final MLP input size."""
-    for prefix in ["features_extractor", "pi_features_extractor", "vf_features_extractor"]:
-        ln_key = f"{prefix}.final_mlp.0.weight"
-        if ln_key in state_dict:
-            return state_dict[ln_key].shape[0]
-    return 444  # Default to v17.2
-
-
-def _import_class(module_name, class_name):
-    """Dynamically import a class from a module."""
-    module = importlib.import_module(module_name)
-    return getattr(module, class_name)
+from players.ppo_player import PPOPlayer, ARCH_REGISTRY, _detect_architecture, _import_class
 
 
 EVAL_PORT = 8004
@@ -186,8 +142,10 @@ def evaluate(model, env, n_battles=500, verbose=True):
     rewards_list = []
     action_counts = defaultdict(int)
 
+    # Reset once: the VecEnv auto-resets after every game, and resetting again would
+    # forfeit that freshly started battle.
+    obs = env.reset()
     for i in range(n_battles):
-        obs = env.reset()
         done = False
         episode_reward = 0
         episode_length = 0
@@ -206,7 +164,8 @@ def evaluate(model, env, n_battles=500, verbose=True):
         rewards_list.append(episode_reward)
         episode_lengths.append(episode_length)
 
-        if episode_reward > 0:
+        # Count real wins; the episode return is not a reliable win signal
+        if info[0].get("battle_won"):
             wins += 1
 
         if verbose and (i + 1) % 100 == 0:
@@ -381,11 +340,8 @@ def main():
               f"±{r['ci_95']:>7.1%} {r['avg_reward']:>10.2f} {r['avg_length']:>10.1f}")
     print("=" * 70)
 
-    print(f"\nBaselines:")
-    print(f"  v13 (hand-crafted):      72%")
-    print(f"  v17.2 (diff LR):         74% peak / 67% smoothed")
-    print(f"  v17.3sp (self-play):      69.5% peak / 60% smoothed")
-    print(f"  v18 (cat eff + mixed SP): 71% peak / 62% smoothed")
+    print(f"\nBaseline (v18.3_best, 1,000 games, true wins):")
+    print(f"  RandomPlayer 94.7% | SimpleHeuristics 67.9% | v17.3sp 60.4%")
 
     return results
 

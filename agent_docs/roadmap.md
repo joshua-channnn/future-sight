@@ -1,0 +1,108 @@
+# Roadmap (from the September 2026 review)
+
+## Where things stand
+- v19 = the v18 architecture plus bug fixes (see `poke_env_gotchas.md`), sparse reward and Wang's
+  full PPO recipe. Trained from scratch to 10M steps on a GCP VM (20 envs) and stopped there on
+  purpose. In-training evals vs SimpleHeuristics (500 games each): 13.4% at 1M, 34.0% at 2M,
+  51.0% at 5M, 61.8% at 7M, 63.0% at 10M, flat from about 7M. Over 1,000 games the 10M model
+  (`models/ppo_pokemon_6v6_v19_best`) wins 60.7% ± 3.0% vs SimpleHeuristics and about 44% ± 2.2%
+  head-to-head vs v18.3 (2,000 games, both seats). It is the from-scratch baseline for step 3;
+  v18.3 stays the best model.
+- Step 1 below is done. The opponent-remaining count is fixed, the extractor encodes all 12 Pokémon
+  in one call (same weights, so every v18 checkpoint still loads), and `PPOPlayer` uses the
+  training mask.
+- v18.3_best predates the fixes. On the current env it wins 67.9% ± 2.9% of 1,000 games vs
+  SimpleHeuristics, against 70.4% ± 2.8% before the opponent-count fix: no measurable change,
+  though its games got shorter (34 vs 43 decisions). Gains have to come from retraining.
+
+## Known limits of the v18 architecture
+1. Switches are chosen blind. The bench is max+mean pooled, so the only per-slot information is
+   10 type-effectiveness floats in `_encode_global`. The policy can't see which switch slot holds
+   which HP, status or species, forced switches included. Wang kept per-Pokémon vectors in place
+   and keyed switches by species; Jaxcalibur scores each switch from that Pokémon's token.
+2. Moves are learned per slot. All 13 logits come from one linear layer, and Showdown shuffles
+   move order when it builds sets (`../pokemon-showdown/data/random-battles/gen9/teams.ts:1586`),
+   so every move has to be learned in all 4 slots.
+3. Policy and value have separate extractors, so value learning (or any auxiliary loss) never
+   shapes the policy's representation. Wang and Jaxcalibur share a trunk.
+4. Missing inputs:
+   - Own tera type. Showdown sends `teraType` for every Pokémon in each request, but poke-env's
+     `Pokemon.update_from_request` drops it, so `tera_type` is None until you terastallize. Read
+     it from `battle.last_request`.
+   - Level (64-100 in gen9 randbats) and actual stats. Ours are in `pokemon.stats`; the
+     opponent's follow from base stats and level, since randbats uses 85 EVs and 31 IVs (0 Atk
+     for special attackers, 0 Spe for Trick Room sets).
+   - The opponent's possible sets: 1-3 per species in
+     `../pokemon-showdown/data/random-battles/gen9/sets.json`.
+   - Damage estimates (`poke_env.calc.damage_calc_gen9`), turn counters (weather, terrain,
+     screens, Trick Room, Tailwind, sleep, Protect), last move used, and a distinct marker for
+     unrevealed opponents (today they are all-zero blocks).
+5. The heuristic masks block legal, often good moves. They judge immunity by the move's base type
+   and block the tera version too, which is wrong for Tera Blast (37 of 869 gen9 sets), -ate
+   abilities, Scrappy/Mind's Eye, and Mold Breaker/Teravolt/Turboblaze into Levitate (13 species).
+6. No memory beyond hand-made history features, and those are rough: the opponent-history "move
+   type" is the type of the last revealed move, not the last one used.
+7. No auxiliary prediction heads.
+
+## Throughput (measured September 2026 on this MacBook Air M3)
+- Websockets are not the cap. poke-env with one local Showdown server runs ~900 decisions/s one
+  game at a time and ~2,200/s with concurrent games (SimpleHeuristics vs itself).
+- One training env against a v18.3 opponent: 160-220 steps/s before step 1, when about half of
+  each step was batch-1 inference for the learner and the opponent. Batching the encoder made
+  that inference 5.7x faster and env steps 1.3-1.7x faster (alternating runs); PPO minibatches
+  didn't get faster.
+- 4 envs in parallel: 250-500 steps/s combined before step 1, 590-750 after (alternating runs).
+  Four env processes plus their Showdown servers fill all 8 cores (4P+4E), and the fanless Air
+  throttles under sustained load (`kernel_task` climbs), so more envs won't help on this machine.
+  Compare speeds with alternating back-to-back runs.
+- Cloud (t2d-standard-32, 20 envs): ~540 steps/s collecting, only about 1.2x this Air, because
+  SubprocVecEnv steps every env together and waits for the slowest. Env processes need one torch
+  thread each (the training script sets this): with the default one-per-core, 20 envs pushed a
+  32-core VM's load average past 360.
+- Over the 10M run, updates slowed from ~95 s to ~159 s. Games got shorter (51 → 26 decisions,
+  so more resets), and the old 3-model opponent cache missed more as the pool grew: 22% → 44% of
+  resets reloaded a model (~90 ms), and each reload stalls every env. `opponent_cache_size` now
+  keeps the whole pool loaded (~19 MB per model per env); on this Air one late-run update went
+  from ~146 s to ~107 s.
+- Self-play games average ~39 decisions per side; SimpleHeuristics vs itself, ~24.
+- A 3-layer, d=128 transformer trunk over 25 tokens takes 0.23 ms at batch 1 on one CPU thread.
+
+## Planned steps, in order
+1. Done: fix the opponent-remaining count, batch the Pokémon encoder, drop `PPOPlayer`'s tera
+   block.
+2. Done: v19 trained from scratch to 10M steps as the clean baseline (results above). Compare step 3
+   against its eval curve at equal steps, with the same 20M learning-rate schedule.
+3. Replace SB3 with a small CleanRL-style PPO loop (~300 lines), trained from scratch, with:
+   per-token action heads (each bench Pokémon scores its own switch; one shared scorer gives each
+   move a move logit and a tera+move logit), a shared trunk, two-sided self-play (record both
+   players when both run the current policy, as Wang did), legality-only masks plus Jaxcalibur's
+   zero-avoiding term, and the missing inputs.
+4. Entity-token transformer (3-4 layers, d=128-192) over the field, 6+6 Pokémon, 4 moves and the
+   last 8-16 events from `battle.observations`. Auxiliary heads for the opponent's next action and
+   its hidden item, ability, moves and tera type; in self-play the labels are free from `battle2`.
+5. Scale out on a many-core cloud machine (~2 cores per env), with the PPO update on a GPU.
+6. Search last. It added about 100-150 Elo on top of Jaxcalibur's network.
+
+Also A/B two Wang settings that were tuned on 3v3 battles, which are half as long:
+`clip_range_vf` (0.0184 vs None; in SB3 it caps each state's value change per update and zeroes
+the gradient past that) and `gae_lambda` (0.754 vs 0.9-0.95).
+
+Fold the cleanup into step 3, since it needs a from-scratch run anyway: remove the hand-made
+features (oscillation detector, "opponent seems passive", game-phase flags, hand-picked item and
+ability flags), the heuristic masks, the shaping code once sparse reward has proven itself, v17
+checkpoint support, the embedding-LR split and the monkeypatched LR scheduler.
+
+## References
+- Wang (2024), MIT thesis, DSpace 1721.1/153888, Gen 4 randbats: per-Pokémon 896-d vectors
+  concatenated into a 3-layer MLP, one head over ~495 actions keyed by move and species ID, a shared
+  policy/value trunk, both players' trajectories recorded, and hyperparameters tuned on 3v3 battles.
+  The raw policy won 78.6% vs SimpleHeuristics after about 3M battles, 90.8% with MCTS; the agent
+  peaked at 1693 Elo (#8) on the gen4 ladder.
+- Jaxcalibur (https://jaxcalibur.github.io/ and Smogon thread 3787537): 8.5M-parameter non-causal
+  transformer over 66 tokens, per-token action logits, auxiliary heads (the opponent's next action
+  "made the bot substantially stronger"; no efficiency number is given), PPO with an undiscounted
+  1/0 reward, entropy plus a zero-avoiding term, about 100M self-play games in a week on one H100
+  with a JAX engine. Peaked at 2557 Elo; search added about 100-150, and the author guesses ~2400
+  without it. Smaller networks trained longer beat larger ones.
+- Foul Play (https://github.com/pmariglia/foul-play): MCTS over poke-engine with set sampling.
+  Peaked at about 2341 Elo.

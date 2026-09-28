@@ -4,11 +4,15 @@ A reinforcement learning bot for Gen 9 Random Battles on [Pokemon Showdown](http
 
 ## Performance
 
-| Opponent | Win Rate (500 games) |
-|----------|---------------------|
-| RandomPlayer | 100% |
-| SimpleHeuristics | 73.2% |
-| Best prior self-play agent | 61.8% |
+`models/ppo_pokemon_6v6_v18.3_best` on the current environment, 1,000 games per opponent, counting actual wins (`battle.won`):
+
+| Opponent | Win Rate (95% CI) |
+|----------|-------------------|
+| RandomPlayer | 94.7% ± 1.4% |
+| SimpleHeuristics | 67.9% ± 2.9% |
+| v17.3sp (prior self-play agent) | 60.4% ± 3.0% |
+
+Earlier versions of this table counted episodes with positive reward as wins, which overstated results (e.g. 73.2% vs SimpleHeuristics).
 
 ## How It Works
 
@@ -70,39 +74,40 @@ python -m eval.ppo_test                                                         
 python -m eval.ppo_test --opponents model --opp-model models/ppo_pokemon_6v6_v17.3sp # head-to-head
 ```
 
+### Train
+
+Needs local Showdown servers on ports 8000-8004 (4 training envs + 1 eval env).
+
+```bash
+python -m training.ppo_embed_train_selfplay                      # from scratch
+python -m training.ppo_embed_train_selfplay \
+    --base_model models/ppo_pokemon_6v6_v18.3_best --reset_value_head   # warm start, fresh value head
+```
+
+### Evaluate against Foul Play
+
+See the instructions at the top of `eval/foulplay_eval.py`.
+
 ## Project Structure
 
 ```
 ├── players/                          # Player wrappers + deployment bots
 │   ├── ppo_player.py                 #   PPO inference player (auto-detects model version)
 │   ├── play_bot.py                   #   Play against the bot locally
-│   ├── ladder_bot.py                 #   Run on the Showdown ladder
-│   ├── search_player.py              #   Value-network-guided search player
-│   ├── engine_search_player.py       #   PPO + poke-engine MCTS search
-│   ├── nn_mcts_player.py             #   Conservative NN + engine MCTS
-│   └── wang_mcts_player.py           #   Wang-style MCTS with NN value leaf
+│   └── ladder_bot.py                 #   Run on the Showdown ladder
 ├── envs/                             # RL environments + gym wrappers
-│   ├── rl_player_6v6.py              #   v17 observation space (640-dim)
+│   ├── rl_player_6v6.py              #   v17 observation space (640-dim), for loading v17 models
 │   ├── rl_player_6v6_v18.py          #   v18 observation space (677-dim)
-│   └── wrappers.py                   #   Maskable action wrapper, curriculum wrapper
+│   └── wrappers.py                   #   Maskable action wrapper
 ├── networks/                         # Neural network feature extractors
 │   ├── embedding_extractor.py        #   v17 feature extractor
 │   ├── embedding_extractor_sp.py     #   v17 self-play variant (max+mean pool)
-│   ├── embedding_extractor_v18.py    #   v18 feature extractor
-│   └── pretrain_embed.py             #   Embedding pretraining (types → effectiveness)
-├── training/                         # Training scripts
-│   ├── ppo_embed_train_selfplay.py   #   v18 mixed self-play + curriculum
-│   ├── ppo_embed_train_parallel.py   #   v18 heuristic-only parallel training
-│   ├── ppo_train.py                  #   v17 curriculum training
-│   └── ppo_train_selfplay.py         #   v13 self-play training
-├── eval/                             # Evaluation + testing
-│   ├── ppo_test.py                   #   Evaluate models vs various opponents
-│   ├── test_battle.py                #   Simple battle smoke test
-│   └── debug.py                      #   Dataset diagnostics
-├── utils/                            # Utilities
-│   ├── state_bridge.py               #   poke-env → search server state conversion
-│   ├── battle_cloner.py              #   JS search state → observation vectors
-│   └── train_log.py                  #   Training monitor (TensorBoard logs)
+│   └── embedding_extractor_v18.py    #   v18 feature extractor
+├── training/
+│   └── ppo_embed_train_selfplay.py   #   Self-play + SimpleHeuristics training
+├── eval/                             # Evaluation
+│   ├── ppo_test.py                   #   Evaluate models vs Random / SimpleHeuristics / other models
+│   └── foulplay_eval.py              #   Evaluate against Foul Play (MCTS bot) running in Docker
 ├── data/                             # Embedding vocabularies + config
 └── models/                           # Trained model checkpoints
 ```

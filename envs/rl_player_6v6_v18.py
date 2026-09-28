@@ -125,8 +125,13 @@ class RL6v6PlayerV18(PokeEnv):
 
     ACTION_SPACE_SIZE = 13
 
-    def __init__(self, data_dir="data", **kwargs):
+    REWARD_MODES = ("shaped", "sparse")
+
+    def __init__(self, data_dir="data", reward_mode="shaped", **kwargs):
         super().__init__(**kwargs)
+        if reward_mode not in self.REWARD_MODES:
+            raise ValueError(f"reward_mode must be one of {self.REWARD_MODES}, got {reward_mode!r}")
+        self.reward_mode = reward_mode
         data_path = Path(data_dir)
         with open(data_path / "pokemon_to_idx.json") as f:
             self.pokemon_to_idx = json.load(f)
@@ -164,8 +169,9 @@ class RL6v6PlayerV18(PokeEnv):
         if was_switch:
             self._turns_since_switch = 0
             si = action - 8
-            if si < len(battle.available_switches):
-                self._switch_history.append(battle.available_switches[si].species)
+            targets = self.switch_targets(battle)
+            if si < len(targets):
+                self._switch_history.append(targets[si].species)
                 if len(self._switch_history) > 6:
                     self._switch_history.pop(0)
             self._active_moves_used = set()
@@ -428,7 +434,8 @@ class RL6v6PlayerV18(PokeEnv):
         g.append(1.0 if self._last_action_was_switch else 0.0)
         g.append(min(self._turns_since_switch/10.0, 1.0))
         g.append(self._detect_oscillation())
-        bench = [m for m in battle.team.values() if not m.active and not m.fainted]
+        # Per-slot bench features below line up with switch actions 8..12
+        bench = self.switch_targets(battle)
         ah = sum(self._calc_hazard_damage(battle,m) for m in bench)/max(len(bench),1) if bench else 0.0
         g.append(ah)
         bm = 0.0
@@ -444,8 +451,7 @@ class RL6v6PlayerV18(PokeEnv):
         g.append(1.0 if battle.turn > 20 else 0.0)
 
         oa = sum(1 for m in battle.team.values() if not m.fainted)
-        ea = sum(1 for m in battle.opponent_team.values()
-                 if m.current_hp_fraction is not None and m.current_hp_fraction > 0)
+        ea = self._opponent_remaining(battle)
         g.extend([oa/6.0, ea/6.0, (oa-ea+6)/12.0])
 
         if my and opp:
@@ -601,7 +607,47 @@ class RL6v6PlayerV18(PokeEnv):
         if r[0]==r[2] and r[0]!=r[1]: return 0.7
         return 0.0
 
+    def _is_discarded_perspective(self, battle):
+        """PokeEnv.reset/step also embed and score the opponent's battle (battle2) on this same
+        object. SingleAgentWrapper throws those results away, but computing them would overwrite
+        our per-episode state (_last_potential, opponent history, hazard flag), so skip them."""
+        battle2 = getattr(self, "battle2", None)
+        return battle2 is not None and battle is battle2
+
+    @staticmethod
+    def _opponent_remaining(battle):
+        """Opponent Pokemon that haven't fainted.
+
+        battle.opponent_team only holds the Pokemon revealed so far (random battles have no team
+        preview), so counting its healthy members says 1 of 6 on turn 1. Count the fainted instead.
+        """
+        return 6 - sum(1 for m in battle.opponent_team.values() if m.fainted)
+
+    @staticmethod
+    def switch_targets(battle):
+        """Pokemon behind switch actions 8..12, in battle.team order.
+
+        battle.available_switches follows Showdown's request order, which reshuffles after every
+        switch, so it can't be used to index actions that the observation has to describe.
+        """
+        if getattr(battle, "reviving", False):
+            return battle.available_switches[:5]
+        return [m for m in battle.team.values() if not m.active and not m.fainted][:5]
+
+    def _switch_action_to_request_index(self, action, battle):
+        """Translate switch action 8+k into available_switches indexing; -1 if not legal."""
+        if action < 8:
+            return action
+        targets = self.switch_targets(battle)
+        k = action - 8
+        if k < len(targets) and targets[k] in battle.available_switches:
+            return 8 + battle.available_switches.index(targets[k])
+        return -1
+
     def embed_battle(self, battle):
+        if self._is_discarded_perspective(battle):
+            return np.zeros(self.OBSERVATION_SIZE, dtype=np.float32)
+
         if battle.battle_tag != self._last_battle_tag:
             self._reset_battle_state()
             self._last_battle_tag = battle.battle_tag
@@ -636,13 +682,14 @@ class RL6v6PlayerV18(PokeEnv):
         p = 0.0
 
         oh = sum(m.current_hp_fraction for m in battle.team.values())
-        eh = sum(m.current_hp_fraction for m in battle.opponent_team.values()
-                 if m.current_hp_fraction is not None)
+        # Unrevealed opponents are at full HP
+        eh = (sum(m.current_hp_fraction for m in battle.opponent_team.values()
+                  if m.current_hp_fraction is not None)
+              + max(6 - len(battle.opponent_team), 0))
         p += (oh - eh) * 0.1
 
         oa = sum(1 for m in battle.team.values() if m.current_hp_fraction > 0)
-        ea = sum(1 for m in battle.opponent_team.values()
-                 if m.current_hp_fraction is not None and m.current_hp_fraction > 0)
+        ea = self._opponent_remaining(battle)
         p += (oa - ea) * 0.05
 
         my, opp = battle.active_pokemon, battle.opponent_active_pokemon
@@ -685,6 +732,15 @@ class RL6v6PlayerV18(PokeEnv):
         return p
 
     def calc_reward(self, battle, auditor=None):
+        if self._is_discarded_perspective(battle):
+            return 0.0
+
+        if self.reward_mode == "sparse":
+            # +1 on a win, -1 on a loss, 0 on every other step
+            return self.reward_computing_helper(
+                battle, fainted_value=0.0, hp_value=0.0, victory_value=1.0
+            )
+
         base = self.reward_computing_helper(
             battle, fainted_value=0.20, hp_value=0.0, victory_value=1.0
         )
@@ -706,9 +762,12 @@ class RL6v6PlayerV18(PokeEnv):
     def get_action_mask(self, battle):
         mask = np.zeros(self.ACTION_SPACE_SIZE, dtype=np.float32)
 
+        switch_slots = [k for k, mon in enumerate(self.switch_targets(battle))
+                        if mon in battle.available_switches]
+
         if battle.force_switch:
-            for i in range(min(5, len(battle.available_switches))):
-                mask[8 + i] = 1.0
+            for k in switch_slots:
+                mask[8 + k] = 1.0
             if mask.sum() == 0:
                 mask[0] = 1.0
             return mask
@@ -756,8 +815,8 @@ class RL6v6PlayerV18(PokeEnv):
                 if battle.can_tera:
                     mask[4 + i] = 1.0
 
-        for i in range(min(5, len(battle.available_switches))):
-            mask[8 + i] = 1.0
+        for k in switch_slots:
+            mask[8 + k] = 1.0
 
         if mask.sum() == 0:
             mask[0] = 1.0
@@ -765,7 +824,7 @@ class RL6v6PlayerV18(PokeEnv):
         return mask
 
     def action_to_order(self, action, battle, *a, **kw):
-        action = int(action)
+        action = self._switch_action_to_request_index(int(action), battle)
         num_moves = len(battle.available_moves) if battle.available_moves else 0
         num_switches = len(battle.available_switches) if battle.available_switches else 0
         if num_moves == 0 and num_switches == 0:
@@ -801,8 +860,9 @@ class RL6v6PlayerV18(PokeEnv):
         if order.order in battle.available_moves:
             move_idx = battle.available_moves.index(order.order)
             return (4 + move_idx) if hasattr(order,'terastallize') and order.terastallize else move_idx
-        if order.order in battle.available_switches:
-            return 8 + battle.available_switches.index(order.order)
+        targets = self.switch_targets(battle)
+        if order.order in battle.available_switches and order.order in targets:
+            return 8 + targets.index(order.order)
         return -1
 
     def choose_move(self, battle):

@@ -47,56 +47,63 @@ CONFIG = {
     "total_timesteps": 100_000_000,
     "n_envs": 4,
 
-    # Differential LR — lower initials to avoid destabilizing warm-started weights
-    "base_lr": 1e-5,
-    "base_lr_initial": 3e-5,       # was 1e-4 in v18.2
-    "embed_lr": 1e-4,
-    "embed_lr_initial": 3e-4,      # was 1e-3 in v18.2
-    "lr_decay_exponent": 1.0,
+    # LR schedule from Wang (2024), Table A.3: lr = 10^-4.23 / (8x + 1)^1.5 over progress x.
+    # Embeddings keep their 10x multiplier.
+    "base_lr_initial": 10 ** -4.23,
+    "base_lr": 0.0,                # final value the decay approaches
+    "embed_lr_initial": 10 ** -3.23,
+    "embed_lr": 0.0,
+    "lr_decay_exponent": 1.5,
     "use_lr_decay": True,
 
-    # PPO hyperparameters
+    # PPO hyperparameters: the full Wang (2024) Table A.3 bundle. They were tuned together
+    # (sparse reward, ~40K steps per update), so change them together.
     "gamma": 0.9999,
     "gae_lambda": 0.754,
-    "clip_range": 0.08,
-    "n_epochs": 4,
+    "clip_range": 0.0829,
+    "clip_range_vf": 0.0184,
+    "n_epochs": 7,
     "batch_size": 1024,
-    "n_steps": 512,
-    "max_grad_norm": 0.5,
-    "ent_coef": 0.06,
-    "vf_coef": 0.5,
+    "steps_per_update": 40_960,    # split across envs; Wang used 78 workers x 512
+    "max_grad_norm": 0.543,
+    "ent_coef": 0.0588,
+    "vf_coef": 0.4375,
+
+    # "sparse" = +1 win / -1 loss (Wang); "shaped" = faint bonus + potential shaping
+    "reward_mode": "sparse",
 
     # Architecture
     "features_dim": 256,
     "pokemon_repr_dim": 128,
-    "embed_dropout": 0.05,
+    "embed_dropout": 0.0,          # rollouts run in eval mode, so dropout skews PPO ratios
     "net_arch_pi": [256, 128],
     "net_arch_vf": [256, 128],
     "share_features_extractor": False,
 
     # Self-play pool
     "pool_save_freq": 1_000_000,
-    "max_pool_size": 10,
+    "max_pool_size": 30,
+    "opponent_cache_size": 30,     # opponents kept loaded per env (~19 MB each); covers the pool
+    "latest_opponent_ratio": 0.5,  # share of self-play games against the newest checkpoint
 
     # Heuristic curriculum: (timestep_threshold, heuristic_ratio)
     # Interpolates linearly between thresholds
     "heuristic_schedule": [
-        (0,          0.40),    # 0-20M:   40% heuristic
-        (20_000_000, 0.20),    # 20-60M:  20% heuristic
-        (60_000_000, 0.10),    # 60-100M: 10% heuristic
+        (0, 0.10),
     ],
 
-    # Evaluation (always vs SimpleHeuristics as fixed benchmark)
-    "eval_freq": 100_000,
-    "n_eval_episodes": 200,
+    # Evaluation (always vs SimpleHeuristics as fixed benchmark, counting real wins).
+    # 500 games gives about +/-4 points of 95% confidence at a ~66% win rate.
+    "eval_freq": 1_000_000,
+    "n_eval_episodes": 500,
     "save_freq": 200_000,
 
     # Paths
     "data_dir": "data",
     "log_dir": "logs",
     "model_dir": "models",
-    "pool_dir": "models/selfplay_pool_v18.3",
-    "version": "v18.3",
+    "pool_dir": "models/selfplay_pool_v19",
+    "version": "v19",
 }
 
 
@@ -157,8 +164,12 @@ def safe_save(model, path):
         model._logger = logger_backup
 
 
-def warm_start_from_model(model, source_path: str, source_name: str = "source"):
-    """Transfer matching weights from any saved model."""
+VALUE_HEAD_PREFIXES = ("vf_features_extractor.", "mlp_extractor.value_net.", "value_net.")
+
+
+def warm_start_from_model(model, source_path: str, source_name: str = "source",
+                          skip_prefixes=()):
+    """Transfer matching weights from any saved model, except params under skip_prefixes."""
     import zipfile, io
 
     load_path = source_path
@@ -178,7 +189,10 @@ def warm_start_from_model(model, source_path: str, source_name: str = "source"):
     skipped_names = []
 
     for name, param in source_state.items():
-        if name in current_state:
+        if name.startswith(tuple(skip_prefixes)):
+            skipped += 1
+            skipped_names.append(f"    {name}: reset (skip_prefixes)")
+        elif name in current_state:
             if current_state[name].shape == param.shape:
                 current_state[name] = param
                 transferred += 1
@@ -203,16 +217,19 @@ class SelfPlayOpponentManager:
         self.pool_dir = config["pool_dir"]
         self.max_pool_size = config["max_pool_size"]
         self.total_timesteps = config["total_timesteps"]
+        self.latest_ratio = config.get("latest_opponent_ratio", 0.0)
         os.makedirs(self.pool_dir, exist_ok=True)
         self.pool_paths: List[str] = []
         self._scan_existing_pool()
 
     def _scan_existing_pool(self):
+        # Oldest first: seeds, then checkpoints by (zero-padded) timestep, so pool_paths[-1]
+        # is the newest checkpoint and eviction removes seeds before checkpoints.
         self.pool_paths = []
         if os.path.exists(self.pool_dir):
-            for f in sorted(os.listdir(self.pool_dir)):
-                if f.endswith(".zip"):
-                    self.pool_paths.append(os.path.join(self.pool_dir, f))
+            files = [f for f in os.listdir(self.pool_dir) if f.endswith(".zip")]
+            for f in sorted(files, key=lambda f: (not f.startswith("seed_"), f)):
+                self.pool_paths.append(os.path.join(self.pool_dir, f))
         if self.pool_paths:
             print(f"  Found {len(self.pool_paths)} checkpoints in pool")
 
@@ -230,7 +247,11 @@ class SelfPlayOpponentManager:
                 pass
 
     def get_random_checkpoint_path(self) -> Optional[str]:
-        return random.choice(self.pool_paths) if self.pool_paths else None
+        if not self.pool_paths:
+            return None
+        if random.random() < self.latest_ratio:
+            return self.pool_paths[-1]
+        return random.choice(self.pool_paths)
 
     def get_pool_size(self) -> int:
         return len(self.pool_paths)
@@ -242,7 +263,7 @@ class SelfPlayEnvWrapper(MaskablePokeEnvWrapper):
 
     def __init__(self, env, rl_env, opponent_manager, server_config,
                  data_dir="data", heuristic_opponent=None,
-                 heuristic_schedule=None, progress_tracker=None):
+                 heuristic_schedule=None, progress_tracker=None, opponent_cache_size=30):
         super().__init__(env, rl_env)
         self.opponent_manager = opponent_manager
         self.server_config = server_config
@@ -251,7 +272,7 @@ class SelfPlayEnvWrapper(MaskablePokeEnvWrapper):
         self.heuristic_schedule = heuristic_schedule or [(0, 0.25)]
         self.progress_tracker = progress_tracker or {"timesteps": 0}
         self._selfplay_cache = {}
-        self._max_cache_size = 3
+        self._max_cache_size = opponent_cache_size
         self._games_played = 0
         self._heuristic_games = 0
         self._selfplay_games = 0
@@ -318,7 +339,11 @@ class SelfPlayEnvWrapper(MaskablePokeEnvWrapper):
         return super().reset(**kwargs)
 
     def _get_or_load_selfplay(self, checkpoint_path):
+        # Least recently used goes first. A reload takes about 90 ms, and because SubprocVecEnv
+        # steps every env together, each one stalls all of them: with a 3-model cache and a
+        # 14-model pool that was about 690 reloads and a third of the time per update.
         if checkpoint_path in self._selfplay_cache:
+            self._selfplay_cache[checkpoint_path] = self._selfplay_cache.pop(checkpoint_path)
             return self._selfplay_cache[checkpoint_path]
         try:
             from players.ppo_player import PPOPlayer
@@ -359,6 +384,27 @@ class ProgressTrackerCallback(BaseCallback):
         return True
 
 
+class RolloutThreadsCallback(BaseCallback):
+    """One torch thread while collecting rollouts, all of them for the PPO update.
+
+    During rollouts the env processes and Showdown servers need the cores, and a full thread pool
+    for the small per-step batch only fights them: on a 32-core VM with 20 envs, collection ran at
+    174 steps/s with the default threads and 540 with one.
+    """
+    def __init__(self):
+        super().__init__(verbose=0)
+        self.update_threads = torch.get_num_threads()
+
+    def _on_rollout_start(self):
+        torch.set_num_threads(1)
+
+    def _on_rollout_end(self):
+        torch.set_num_threads(self.update_threads)
+
+    def _on_step(self):
+        return True
+
+
 class WinRateCallback(BaseCallback):
     def __init__(self, check_freq=10000):
         super().__init__(verbose=0)
@@ -368,8 +414,8 @@ class WinRateCallback(BaseCallback):
 
     def _on_step(self):
         for info in self.locals.get("infos", []):
-            if "episode" in info:
-                if info["episode"]["r"] > 0:
+            if "battle_won" in info:
+                if info["battle_won"]:
                     self.wins += 1
                 else:
                     self.losses += 1
@@ -546,9 +592,9 @@ class PeriodicSaveCallback(BaseCallback):
 
 
 class EvalWinRateCallback(BaseCallback):
-    def __init__(self, eval_env, eval_freq=100_000, n_eval=200, save_path="models", version="v18.3"):
+    def __init__(self, make_eval_env, eval_freq=100_000, n_eval=200, save_path="models", version="v18.3"):
         super().__init__(verbose=0)
-        self.eval_env = eval_env
+        self.make_eval_env = make_eval_env
         self.eval_freq = eval_freq
         self.n_eval = n_eval
         self.save_path = save_path
@@ -562,36 +608,16 @@ class EvalWinRateCallback(BaseCallback):
             return True
         self._last_eval_step = self.num_timesteps
 
-        wins, total_reward = 0, 0
-        completed = 0
         print(f"\n>>> Eval ({self.n_eval} games vs SimpleHeuristics)...")
-        for ep in range(self.n_eval):
-            try:
-                obs = self.eval_env.reset()
-                done, ep_reward = False, 0
-                steps = 0
-                while not done:
-                    masks = self.eval_env.env_method("action_masks")[0]
-                    action, _ = self.model.predict(obs, deterministic=True, action_masks=masks)
-                    obs, reward, done, info = self.eval_env.step(action)
-                    ep_reward += reward[0]
-                    done = done[0]
-                    steps += 1
-                    if steps > 500:
-                        break
-                total_reward += ep_reward
-                completed += 1
-                if ep_reward > 0:
-                    wins += 1
-            except Exception as e:
-                print(f"    Eval game {ep} failed: {e}")
-                try:
-                    self.eval_env.reset()
-                except Exception:
-                    pass
-                continue
-            if (ep + 1) % 50 == 0:
-                print(f"    {ep+1}/{self.n_eval}...")
+        # A fresh env per evaluation, closed right after. The VecEnv starts a new battle after the
+        # last game, and once that battle had sat idle until the next evaluation, the reset's
+        # forfeit no longer reached it and training hung (at 2M steps in the first cloud run).
+        eval_env = self.make_eval_env()
+        try:
+            wins, total_reward, completed = self._play(eval_env)
+        finally:
+            # Forfeit that just-started battle without waiting for it to end
+            eval_env.get_attr("rl_env")[0].close(force=True, wait=False)
 
         if completed == 0:
             print("    WARNING: No eval games completed")
@@ -615,6 +641,35 @@ class EvalWinRateCallback(BaseCallback):
         print(f"{'='*60}\n")
         return True
 
+    def _play(self, eval_env):
+        wins, total_reward, completed = 0, 0, 0
+        # Reset once: the VecEnv auto-resets after every game (TimeLimit caps game length), and
+        # resetting again would forfeit that freshly started battle.
+        obs = eval_env.reset()
+        for ep in range(self.n_eval):
+            try:
+                done, ep_reward = False, 0
+                while not done:
+                    masks = eval_env.env_method("action_masks")[0]
+                    action, _ = self.model.predict(obs, deterministic=True, action_masks=masks)
+                    obs, reward, done, info = eval_env.step(action)
+                    ep_reward += reward[0]
+                    done = done[0]
+                total_reward += ep_reward
+                completed += 1
+                if info[0].get("battle_won"):
+                    wins += 1
+            except Exception as e:
+                print(f"    Eval game {ep} failed: {e}")
+                try:
+                    obs = eval_env.reset()
+                except Exception:
+                    pass
+                continue
+            if (ep + 1) % 50 == 0:
+                print(f"    {ep+1}/{self.n_eval}...")
+        return wins, total_reward, completed
+
     def get_state(self):
         return {'best_win_rate': self.best_win_rate, 'results': self.results,
                 'last_eval_step': self._last_eval_step}
@@ -627,6 +682,10 @@ class EvalWinRateCallback(BaseCallback):
 
 def make_selfplay_env(env_idx, config, opponent_manager, progress_tracker):
     def _init():
+        if multiprocessing.current_process().name != "MainProcess":
+            # One torch thread per env process: each one otherwise starts a thread per core for
+            # batch-1 inference, and 20 envs on a 32-core VM pushed the load average past 360
+            torch.set_num_threads(1)
         port = BASE_PORT + env_idx
         server_config = get_server_config(port)
         uid = uuid.uuid4().hex[:6]
@@ -634,6 +693,7 @@ def make_selfplay_env(env_idx, config, opponent_manager, progress_tracker):
         rl_env = RL6v6PlayerV18(
             battle_format="gen9randombattle",
             data_dir=config["data_dir"],
+            reward_mode=config.get("reward_mode", "shaped"),
             server_configuration=server_config,
             account_configuration1=AccountConfiguration.generate(f"Bot{env_idx}-{uid}", rand=True),
             account_configuration2=AccountConfiguration.generate(f"Opp{env_idx}-{uid}", rand=True),
@@ -652,6 +712,7 @@ def make_selfplay_env(env_idx, config, opponent_manager, progress_tracker):
             heuristic_opponent=heuristic_opponent,
             heuristic_schedule=config.get("heuristic_schedule", [(0, 0.25)]),
             progress_tracker=progress_tracker,
+            opponent_cache_size=config.get("opponent_cache_size", config["max_pool_size"]),
         )
         env = TimeLimit(env, max_episode_steps=500)
         env = Monitor(env)
@@ -668,6 +729,7 @@ def make_eval_env(env_idx, config):
         rl_env = RL6v6PlayerV18(
             battle_format="gen9randombattle",
             data_dir=config["data_dir"],
+            reward_mode=config.get("reward_mode", "shaped"),
             server_configuration=server_config,
             account_configuration1=AccountConfiguration.generate(f"EvalBot-{uid}", rand=True),
             account_configuration2=AccountConfiguration.generate(f"EvalOpp-{uid}", rand=True),
@@ -694,9 +756,11 @@ def create_training_env(config, opponent_manager, progress_tracker):
             multiprocessing.set_start_method("forkserver", force=True)
         except RuntimeError:
             pass
+    # Not "fork": poke-env runs its event loop in a thread started at import, forked children
+    # don't get that thread, and their envs hang on creation
     return SubprocVecEnv(
         [make_selfplay_env(i, config, opponent_manager, progress_tracker) for i in range(n_envs)],
-        start_method="forkserver" if sys.platform == "darwin" else "fork",
+        start_method="forkserver",
     )
 
 
@@ -738,7 +802,7 @@ def seed_pool_with_models(pool_dir, model_paths):
     return seeded
 
 
-def train(config=None, base_model=None):
+def train(config=None, base_model=None, reset_value_head=False):
     if config is None:
         config = CONFIG.copy()
 
@@ -747,7 +811,9 @@ def train(config=None, base_model=None):
     os.makedirs(config["model_dir"], exist_ok=True)
     os.makedirs(config["pool_dir"], exist_ok=True)
 
-    base_lr, embed_lr = config["base_lr"], config["embed_lr"]
+    base_lr = config.get("base_lr_initial", config["base_lr"])
+    embed_lr = config.get("embed_lr_initial", config["embed_lr"])
+    n_steps = config["steps_per_update"] // config["n_envs"]
     schedule = config.get("heuristic_schedule", [(0, 0.25)])
 
     print("=" * 70)
@@ -755,13 +821,14 @@ def train(config=None, base_model=None):
     print("=" * 70)
     print(f"  Architecture: v18 (cat. eff, def bench, opp history, self history)")
     print(f"  Observation:  677 dims")
-    print(f"  Training:     Self-play + SimpleHeuristics curriculum")
+    print(f"  Training:     Self-play ({config.get('latest_opponent_ratio', 0.0):.0%} vs newest checkpoint) + SimpleHeuristics")
     print(f"                {int(schedule[0][1]*100)}% heuristic -> {int(schedule[-1][1]*100)}% heuristic over training")
     print(f"  Masking:      Immune moves + ability immunities + redundant status")
-    print(f"  Reward:       faint=0.25, opp_boost=0.04/stage, matchup=0.05")
+    print(f"  Reward:       {config.get('reward_mode', 'shaped')}")
     print(f"  LR decay:     exponent={config['lr_decay_exponent']}")
-    print(f"  Embedding LR: {config.get('embed_lr_initial', embed_lr):.1e} -> {embed_lr:.1e}")
-    print(f"  Network LR:   {config.get('base_lr_initial', base_lr):.1e} -> {base_lr:.1e}")
+    print(f"  Embedding LR: {embed_lr:.1e} -> {config['embed_lr']:.1e}")
+    print(f"  Network LR:   {base_lr:.1e} -> {config['base_lr']:.1e}")
+    print(f"  Rollout:      {config['n_envs']} envs x {n_steps:,} steps = {config['n_envs'] * n_steps:,} per update")
     print(f"  vf_coef:      {config['vf_coef']}")
     print(f"  Target:       {config['total_timesteps']:,} steps\n")
 
@@ -781,6 +848,7 @@ def train(config=None, base_model=None):
             "models/ppo_pokemon_6v6_v17.3sp_best",
             "models/ppo_pokemon_6v6_v18.1_best",
             "models/ppo_pokemon_6v6_v18.2_best",
+            "models/ppo_pokemon_6v6_v18.3_best",
         ]
         existing = [p for p in seed_models if os.path.exists(p) or os.path.exists(p + ".zip")]
         if existing:
@@ -790,8 +858,7 @@ def train(config=None, base_model=None):
 
     print("Creating environments...")
     train_env = create_training_env(config, opponent_manager, progress_tracker)
-    eval_env = create_eval_env(config)
-    print(f"  Training: {config['n_envs']} envs (curriculum) | Eval: 1 env (SimpleHeuristics)")
+    print(f"  Training: {config['n_envs']} envs (curriculum) | Eval: 1 env per evaluation (SimpleHeuristics)")
 
     policy_kwargs = {
         "features_extractor_class": V18FeatureExtractor,
@@ -808,9 +875,10 @@ def train(config=None, base_model=None):
 
     model = MaskablePPO(
         "MlpPolicy", train_env, learning_rate=base_lr,
-        n_steps=config["n_steps"], batch_size=config["batch_size"],
+        n_steps=n_steps, batch_size=config["batch_size"],
         n_epochs=config["n_epochs"], gamma=config["gamma"],
         gae_lambda=config["gae_lambda"], clip_range=config["clip_range"],
+        clip_range_vf=config.get("clip_range_vf"),
         ent_coef=config["ent_coef"], vf_coef=config["vf_coef"],
         max_grad_norm=config["max_grad_norm"], policy_kwargs=policy_kwargs,
         verbose=1, tensorboard_log=config["log_dir"],
@@ -836,7 +904,10 @@ def train(config=None, base_model=None):
         print(f"  Loaded policy, restored timestep: {saved_timesteps:,}")
     elif base_model:
         print(f"\nWarm-starting from {base_model}...")
-        transferred, skipped = warm_start_from_model(model, base_model, "base model")
+        transferred, skipped = warm_start_from_model(
+            model, base_model, "base model",
+            skip_prefixes=VALUE_HEAD_PREFIXES if reset_value_head else (),
+        )
         saved_timesteps = 0
         resuming = False
     else:
@@ -882,7 +953,7 @@ def train(config=None, base_model=None):
             print(f"  {prefix}/{name}: {embed.weight.data.norm().item():.4f}")
 
     eval_callback = EvalWinRateCallback(
-        eval_env=eval_env, eval_freq=config["eval_freq"],
+        make_eval_env=lambda: create_eval_env(config), eval_freq=config["eval_freq"],
         n_eval=config["n_eval_episodes"], save_path=config["model_dir"],
         version=version,
     )
@@ -897,6 +968,7 @@ def train(config=None, base_model=None):
         print(f"\nFresh training: {remaining:,} total steps")
 
     callbacks = CallbackList([
+        RolloutThreadsCallback(),
         ProgressTrackerCallback(progress_tracker),
         WinRateCallback(check_freq=10000),
         EnhancedEmbeddingStatsCallback(check_freq=25000),
@@ -951,18 +1023,15 @@ def train(config=None, base_model=None):
             m = " *" if r['win_rate'] >= eval_callback.best_win_rate else ""
             print(f"  {r['step']:>9,}: {r['win_rate']:>5.1%}  (rew: {r['avg_reward']:>6.3f}){m}")
         print(f"\nBest: {eval_callback.best_win_rate:.1%}")
-        print(f"v18.2 baseline: 74% (SimpleHeuristics)")
+        print(f"v18.3_best baseline: 67.9% true wins (SimpleHeuristics, 1,000 games)")
 
     if interrupted:
-        print(f"\nResume: python ppo_v18_3_selfplay.py")
-        print(f"Fresh:  python ppo_v18_3_selfplay.py --base_model models/ppo_pokemon_6v6_v18.2_best")
+        print(f"\nResume: python -m training.ppo_embed_train_selfplay")
+        print(f"Fresh:  python -m training.ppo_embed_train_selfplay "
+              f"--base_model models/ppo_pokemon_6v6_v18.3_best --reset_value_head")
 
     try:
         train_env.close()
-    except Exception:
-        pass
-    try:
-        eval_env.close()
     except Exception:
         pass
     return model
@@ -970,11 +1039,16 @@ def train(config=None, base_model=None):
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="v18.3 Mixed Self-Play + Curriculum Training")
+    parser = argparse.ArgumentParser(description=f"{CONFIG['version']} Mixed Self-Play + Curriculum Training")
     parser.add_argument("--base_model", type=str, default=None,
-                        help="Path to model for warm-start (e.g. models/ppo_pokemon_6v6_v18.2_best)")
+                        help="Path to model for warm-start (e.g. models/ppo_pokemon_6v6_v18.3_best)")
+    parser.add_argument("--reset_value_head", action="store_true",
+                        help="With --base_model: keep the policy but re-initialize the value network "
+                             "(use when the reward has changed)")
     parser.add_argument("--timesteps", type=int, default=None)
     parser.add_argument("--ent_coef", type=float, default=None)
+    parser.add_argument("--n_envs", type=int, default=None,
+                        help="Parallel envs (needs a Showdown server on ports 8000..8000+n_envs)")
     args = parser.parse_args()
 
     config = CONFIG.copy()
@@ -982,5 +1056,7 @@ if __name__ == "__main__":
         config["total_timesteps"] = args.timesteps
     if args.ent_coef is not None:
         config["ent_coef"] = args.ent_coef
+    if args.n_envs:
+        config["n_envs"] = args.n_envs
 
-    train(config, base_model=args.base_model)
+    train(config, base_model=args.base_model, reset_value_head=args.reset_value_head)

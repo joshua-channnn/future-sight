@@ -160,25 +160,26 @@ class V18FeatureExtractor(BaseFeaturesExtractor):
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight); nn.init.zeros_(m.bias)
 
-    def _encode_pokemon_batch(self, obs, offset, batch_size):
-        idx = offset
-        species = obs[:, idx].long().clamp(0, self.config["pokemon_vocab_size"]-1); idx+=1
-        moves = obs[:, idx:idx+4].long().clamp(0, self.config["move_vocab_size"]-1); idx+=4
-        ability = obs[:, idx].long().clamp(0, self.config["ability_vocab_size"]-1); idx+=1
-        item = obs[:, idx].long().clamp(0, self.config["item_vocab_size"]-1); idx+=1
-        types = obs[:, idx:idx+2].long().clamp(0, NUM_TYPES-1); idx+=2
-        mtypes = obs[:, idx:idx+4].long().clamp(0, NUM_TYPES-1); idx+=4
-        floats = obs[:, idx:idx+31]; idx+=31
+    def _encode_pokemon_blocks(self, blocks):
+        """Encode (N, 44) per-Pokemon blocks in one encoder call."""
+        idx = 0
+        species = blocks[:, idx].long().clamp(0, self.config["pokemon_vocab_size"]-1); idx+=1
+        moves = blocks[:, idx:idx+4].long().clamp(0, self.config["move_vocab_size"]-1); idx+=4
+        ability = blocks[:, idx].long().clamp(0, self.config["ability_vocab_size"]-1); idx+=1
+        item = blocks[:, idx].long().clamp(0, self.config["item_vocab_size"]-1); idx+=1
+        types = blocks[:, idx:idx+2].long().clamp(0, NUM_TYPES-1); idx+=2
+        mtypes = blocks[:, idx:idx+4].long().clamp(0, NUM_TYPES-1); idx+=4
+        floats = blocks[:, idx:idx+31]; idx+=31
         return self.pokemon_encoder(species, moves, ability, item, types, mtypes, floats)
 
     def forward(self, observations):
         bs = observations.shape[0]
         PER = 44  # Per-pokemon block size (unchanged)
 
-        reprs = []
-        for i in range(12):
-            reprs.append(self._encode_pokemon_batch(observations, i*PER, bs))
-        reprs = torch.stack(reprs, dim=1)
+        # All 12 Pokemon through the encoder at once; 12 separate calls made this forward
+        # about 6x slower at batch 1 (self-play opponents, live play)
+        blocks = observations[:, :12*PER].reshape(bs * 12, PER)
+        reprs = self._encode_pokemon_blocks(blocks).view(bs, 12, -1)
         reprs = self.embed_dropout(reprs)
 
         our_active = reprs[:, 0]
