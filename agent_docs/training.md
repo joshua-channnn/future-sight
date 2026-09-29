@@ -1,5 +1,8 @@
 # Training
 
+This page is about the SB3 trainer (v17-v19). For v20 (`training/ppo_v20.py`) see the
+"v20" section at the end and `agent_docs/v20.md`.
+
 ## Running
 - Start 5 servers (ports 8000-8003 for 4 training envs, 8004 for the eval env) from the Showdown
   directory: `cd ../pokemon-showdown && ../pokemon-rl/start_servers.sh 5`. Logs go to
@@ -36,3 +39,24 @@
 - `models/ppo_pokemon_6v6_<version>_latest.zip`, `..._best.zip`, `models/selfplay_pool_<version>/`,
   `models/training_state_<version>.pkl`, `models/optimizer_state_<version>.pt`.
 - `_best` is the maximum over many noisy evals. Re-evaluate it with 1,000+ games before trusting it.
+
+## v20 (`training/ppo_v20.py`)
+- Servers: `--servers S` servers on ports 8000..8000+S-1 for the workers, plus port 8000+S for
+  evals (start them one at a time: every `pokemon-showdown start` rebuilds).
+- Run: `python3 -m training.ppo_v20 --workers 6 --servers 3 --stop-at 10000000`. It resumes from
+  `models/ppo_pokemon_6v6_<version>_latest.pt` when that exists (`--version` picks the name). On
+  the MacBook use `tools/run_v20_mac.sh` with the same arguments (pauses on low battery).
+- One stdout line per update (`update N | total_timesteps ... | fps ... | kl ... | win ...`), and
+  `>>> Eval @ <step>: <rate> (<wins>/<games>)` when an eval finishes; evals run in their own
+  process while training continues.
+- Settings: `CONFIG` in `training/ppo_v20.py`. The PPO values are v19's (Wang's bundle); v20 adds
+  `zero_avoid_coef` (0.005), `update_device` (the GPU when there is one) and the opponent mix
+  (`heuristic_ratio`, `latest_opponent_ratio`, where "latest" is the live policy with both sides
+  recorded).
+- TensorBoard: `logs/<version>/`, with SB3's tag names (`train/approx_kl`,
+  `train/clip_fraction`, `train/explained_variance`, `rollout/ep_len_mean`, `time/fps`,
+  `eval/win_rate`) plus `rollout/win_rate_vs_{live,pool_sb3,pool_v20,heuristic}`,
+  `train/zero_avoid_kl`, `time/collect_s`, `time/update_s`.
+- Throughput on the MacBook Air (alternating runs, September 2026): 6 workers on 3 servers
+  collect 835-1,164 samples/s (720-950 including the 7-8 s MPS update); the SB3 loop with 4 envs
+  collects 274-427 (237-384 with updates).

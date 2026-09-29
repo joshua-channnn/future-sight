@@ -43,3 +43,33 @@ Each of these caused a real, silent bug in this project. All were fixed in v19; 
    said 1 of 6 on turn 1 and undercounted at 92% of decisions, in both the observation and the
    shaped reward. Count the fainted instead (`_opponent_remaining`) and treat unrevealed Pokémon
    as healthy.
+
+Found while building v20 (September 2026); v20 handles them, v18/v19 code is left as it was:
+
+9. **This Showdown fork sends each `|request|` before the turn's battle log** (0.1-0.3 ms earlier;
+   current Showdown sends the log first). poke-env acts on a request as soon as it is parsed, so
+   a decision (and an env observation) can see the state before the turn's events or halfway
+   through them: 4 of 12,700 own-HP checks disagreed with the request before the fix, 0 after.
+   `envs.rl_player_v20.hold_requests_until_log(player)` handles each request after the battle's
+   next log message (or after 50 ms when none follows, as on a re-request after an invalid
+   choice). `RLEnvV20` and `eval/ppo_test.py` install it. Don't use it against the public server:
+   there every request would wait 50 ms. Foul Play needed the same fix (`../foul-play`).
+10. **`GenData.type_chart` is `[defender][attacker]`.** v18's `get_type_multiplier` and
+    `_calc_hazard_damage` index it the other way, so v18/v19's bench matchup features and Stealth
+    Rock damage estimates are reversed (a Fire type's SR damage comes out as 1/16 instead of
+    1/4). Kept for checkpoint compatibility; `Pokemon.damage_multiplier` and v20's `type_mult`
+    are right.
+11. **poke-env never decrements `Move.current_pp`** (the log parser calls `moved(..., use=False)`),
+    so v18's PP features were always 1. The request has the active's real PP.
+12. **`Pokemon.first_turn` stays True after a normal move** (only `cant_move` and switching out
+    clear it). v20 derives it from the switch-in turn in the log.
+13. **`battle.weather[w]` is not the start turn**: every `-weather ... [upkeep]` message resets it
+    to the current turn. v20 tracks the start from the events. `battle.fields` and the side
+    conditions do hold start turns (or layer counts).
+14. **Own abilities can be overwritten by log announcements** (As One shows up as Unnerve) and
+    **own tera types are dropped**; the request has both (`ability`, `teraType`).
+    `SimpleHeuristicsPlayer` checks `active.tera_type`, which is None until it terastallizes, so
+    it never terastallizes.
+15. **Illusion (Zoroark) breaks both views**: the opponent's disguised Pokémon collects the real
+    one's moves and HP, and poke-env's own-team tracking for the Zoroark side goes wrong. About 5%
+    of games have a Zoroark; `tools/check_v20_env.py` reports them separately.

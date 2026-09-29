@@ -6,6 +6,14 @@
 - The architecture is detected from the checkpoint, and wins are counted with `battle.won`.
 - The default port is 8004, which a running training job uses for its eval env; pass `--port`.
 
+## v20 models
+`python3 -m eval.ppo_test --model models/X.pt --opponents simple --battles 1000 --port 8123`
+- `.pt` files go through `eval/v20_eval.py` (the v20 env, deterministic v20 policy).
+- `--opponents model --opp-model` takes a v20 `.pt` or an SB3 zip; `--seat both` plays the given
+  number of games in each seat (1: the challenger, p1; 2: the challenged side) and reports both.
+- An SB3 model can also be evaluated against a v20 opponent (`--opp-model models/Y.pt`).
+- Every eval env handles requests after the turn's log (`poke_env_gotchas.md` item 9).
+
 ## How many games
 95% CI ≈ 1.96·sqrt(p(1−p)/n). At p ≈ 0.65 that's ±6.6 points for 200 games, ±4.7 for 400 and
 ±3.0 for 1,000. Detecting a 3-point gain takes about 3,800 games per model, or about 2,200

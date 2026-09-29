@@ -1,10 +1,24 @@
 # CLAUDE.md
 
 Future Sight is a PPO self-play bot for Pokémon Showdown **Gen 9 Random Battles** (singles),
-built on poke-env and Stable-Baselines3 `MaskablePPO`. The goal is a stronger bot, measured by
-*true* win rate against fixed opponents (SimpleHeuristics, older models, Foul Play).
+built on poke-env. v17-v19 use Stable-Baselines3 `MaskablePPO`; v20 (step 3 of the roadmap) has its
+own PPO loop, entity-token observations and per-token action heads. The goal is a stronger bot,
+measured by *true* win rate against fixed opponents (SimpleHeuristics, older models, Foul Play).
 
 ## Map
+v20 (details in `agent_docs/v20.md`):
+- `envs/rl_player_v20.py`: `Featurizer` (12 Pokémon, 4 move and 1 field token; own tera type and
+  ability from the request, estimated opponent stats, damage estimates), the 14-action mapping
+  (4 moves, 4 tera moves, 6 switches by `battle.team` slot), legality-only masks, and `RLEnvV20`
+  (two-agent `PokeEnv` with timeouts and the request-order fix).
+- `networks/v20_policy.py`: `V20Net` (shared trunk, move head, switch head, value head).
+- `training/ppo_v20.py`: the v20 trainer (worker processes, two-sided self-play, pool, evals in
+  their own process, checkpoints and resume). All settings in `CONFIG`.
+- `players/v20_player.py`: `V20Policy`, `V20Player`, `load_opponent` (v20 `.pt` or SB3 zip).
+- `eval/v20_eval.py`: evaluation games for v20; `eval/ppo_test.py` routes `.pt` models there.
+- `tools/`: checks against live battles (`check_v20_*`), `bench_sb3.py`, `run_v20_mac.sh`.
+
+v17-v19 (SB3):
 - `envs/rl_player_6v6_v18.py`: the environment. Observation (677 floats: 12 Pokémon blocks,
   active-move details, global features), reward (`reward_mode`: `sparse` or `shaped`), action
   masks, and the 13-action mapping (4 moves, 4 tera moves, 5 switches).
@@ -19,23 +33,36 @@ built on poke-env and Stable-Baselines3 `MaskablePPO`. The goal is a stronger bo
 - `cloud/`: scripts for training on a Google Cloud VM (pack, set up, run with a stall guard, fetch).
 - Outside this repo: `../pokemon-showdown` (local Showdown server, a Feb 2026 fork) and
   `../foul-play` (Foul Play, locally patched, run via Docker).
-- `models/` is gitignored except `ppo_pokemon_6v6_v18.3_best.zip`, the current baseline.
+- `models/` is gitignored except `ppo_pokemon_6v6_v18.3_best.zip`, the current baseline. v20
+  checkpoints are torch files: `models/ppo_pokemon_6v6_<version>_{latest,best}.pt`, pool
+  `models/selfplay_pool_<version>/`, eval snapshots `models/eval_snapshots_<version>/`.
 
 ## Running things
 - Use `python3` (3.14, with poke-env 0.11 and SB3 2.7.1). `python` is Anaconda and lacks the deps.
   Run from this directory as modules, e.g. `python3 -m eval.ppo_test`.
 - Everything needs a local Showdown server:
   `cd ../pokemon-showdown && node pokemon-showdown start --no-security --port 8123`.
-- Training occupies ports 8000-8004. Use another port (e.g. 8123) for experiments and evals so you
-  never collide with a running training job; `eval/ppo_test.py` defaults to 8004.
+- SB3 training occupies ports 8000-8004; v20 training uses `--servers` ports from 8000 plus the
+  next one for its evals (8000-8003 with `--servers 3`). Use another port (e.g. 8123) for
+  experiments and evals so you never collide with a running training job; `eval/ppo_test.py`
+  defaults to 8004.
+- v20: `python3 -m training.ppo_v20 --workers 6 --servers 3 --stop-at 10000000` (resumes from
+  `_latest.pt` automatically). On the MacBook, `tools/run_v20_mac.sh` wraps it: it pauses the run
+  when the battery gets low and resumes on power. Each Showdown server is ~10 node processes and
+  ~1.2 GB; don't leave unused ones running on the 16 GB Mac.
+- Evaluate a v20 model: `python3 -m eval.ppo_test --model models/X.pt --opponents simple --battles 1000 --port 8123`
+  (`--seat both` for head-to-heads in both seats).
 - There is no test suite. To check a change: `python3 -m py_compile` the touched files, then run a
-  short eval, `python3 -m eval.ppo_test --opponents simple --battles 400 --port 8123`.
+  short eval, `python3 -m eval.ppo_test --opponents simple --battles 400 --port 8123`. For v20 env
+  or trainer changes also run `python3 -m tools.check_v20_env --games 50 --port 8123` (features
+  vs ground truth, action mapping, orders) and `python3 -m tools.check_v20_selfplay --port 8123`.
 
 ## Rules for every task
 - Count wins with `battle.won` / `info["battle_won"]`, never with the sign of the episode reward.
 - A 400-game eval is only good to about ±4.7 points. Don't report differences smaller than the noise.
 - Changing the observation layout or action meaning breaks old checkpoints: bump
-  `CONFIG["version"]` and add an `ARCH_REGISTRY` entry.
+  `CONFIG["version"]` and add an `ARCH_REGISTRY` entry (SB3), or for v20-style models keep the old
+  featurizer importable (checkpoints store `LAYOUT` and refuse to load with a different one).
 - Current baseline numbers are in the README's Performance table.
 
 ## Read first when working on
@@ -44,4 +71,5 @@ built on poke-env and Stable-Baselines3 `MaskablePPO`. The goal is a stronger bo
 - evaluation or Foul Play: `agent_docs/evaluation.md`
 - training on Google Cloud: `agent_docs/cloud.md`
 - architecture changes or deciding what to do next: `agent_docs/roadmap.md`
-- step 3 (v20: custom PPO loop, per-token action heads): `agent_docs/step3_handoff.md`
+- v20 (design, checks, throughput, results): `agent_docs/v20.md`; the step 3 brief it was built
+  from: `agent_docs/step3_handoff.md`
