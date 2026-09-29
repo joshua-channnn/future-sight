@@ -1024,11 +1024,20 @@ class RLEnvV20(PokeEnv):
         self.agents = [self.agent1.username, self.agent2.username]
         if self.battle1 is not None and not self.battle1.finished:
             raise RuntimeError("reset() with a battle in progress; close the env instead")
+        # a finished battle can reach a queue after step() already returned for it (e.g. when that
+        # side's wait event won the race); don't let it pass for the next battle
+        for agent in (self.agent1, self.agent2):
+            while not agent.battle_queue.empty():
+                agent.battle_queue.get()
+            agent._waiting.clear()
+            agent._trying_again.clear()
         self.reset_battles()
         self._challenge_task = asyncio.run_coroutine_threadsafe(
             self.agent1.battle_against(self.agent2, n_battles=1), POKE_LOOP)
         self.battle1 = _get(self.agent1.battle_queue, self.step_timeout)
         self.battle2 = _get(self.agent2.battle_queue, self.step_timeout)
+        if self.battle1.finished or self.battle2.finished:
+            raise EnvTimeout("reset() got a finished battle")
         self.agent1_to_move = True
         self.agent2_to_move = True
         return {self.agents[0]: self.battle1, self.agents[1]: self.battle2}, self.get_additional_info()
