@@ -49,6 +49,8 @@ class V20Policy:
 
     def action(self, battle):
         idx, flt, mask = self.featurizer.featurize(battle)
+        # training stores features as float16; round the same way here
+        flt = flt.astype(np.float16).astype(np.float32)
         with torch.inference_mode():
             a, _, _ = self.net.act(torch.as_tensor(idx)[None], torch.as_tensor(flt)[None],
                                    torch.as_tensor(mask)[None], self.deterministic)

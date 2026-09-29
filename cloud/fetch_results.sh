@@ -4,7 +4,7 @@
 # training state, the run's self-play checkpoints, TensorBoard logs and the training log where the
 # training and eval scripts expect them. The pool's seed models are left out (they are copies of
 # local models).
-VERSION=${VERSION:-v19}
+VERSION=${VERSION:-v20}
 INSTANCE=${INSTANCE:-fs-train}
 ZONE=${ZONE:-us-west1-a}
 cd "$(dirname "$0")/.." || exit 1
@@ -22,12 +22,24 @@ fetch() {
   echo "FAILED: ${@: -2:1}"; return 1
 }
 mkdir -p "models/selfplay_pool_$VERSION" logs
-for f in "ppo_pokemon_6v6_${VERSION}_best.zip" "ppo_pokemon_6v6_${VERSION}_latest.zip" \
-         "training_state_$VERSION.pkl" "optimizer_state_$VERSION.pt"; do
-  fetch "$R:pokemon-rl/models/$f" models/
-done
+if [ "$VERSION" = "v19" ]; then
+  # SB3 zips plus the separate training and optimizer state
+  for f in "ppo_pokemon_6v6_${VERSION}_best.zip" "ppo_pokemon_6v6_${VERSION}_latest.zip" \
+           "training_state_$VERSION.pkl" "optimizer_state_$VERSION.pt"; do
+    fetch "$R:pokemon-rl/models/$f" models/
+  done
+  EXT=zip
+else
+  # v20: torch checkpoints (_latest holds the optimizer and training state) and eval snapshots
+  for f in "ppo_pokemon_6v6_${VERSION}_best.pt" "ppo_pokemon_6v6_${VERSION}_latest.pt"; do
+    fetch "$R:pokemon-rl/models/$f" models/
+  done
+  mkdir -p "models/eval_snapshots_$VERSION"
+  fetch "$R:pokemon-rl/models/eval_snapshots_$VERSION/" "models/eval_snapshots_$VERSION/"
+  EXT=pt
+fi
 # Only written when a run reaches its last step
-rsync -a --partial --timeout=60 -e "$SSH" "$R:pokemon-rl/models/ppo_pokemon_6v6_$VERSION.zip" models/ 2>/dev/null \
+rsync -a --partial --timeout=60 -e "$SSH" "$R:pokemon-rl/models/ppo_pokemon_6v6_$VERSION.$EXT" models/ 2>/dev/null \
   && echo "ok: final model" || echo "no final model (the run was stopped before its last step)"
 fetch --exclude='seed_*' "$R:pokemon-rl/models/selfplay_pool_$VERSION/" "models/selfplay_pool_$VERSION/"
 fetch "$R:pokemon-rl/logs/" logs/

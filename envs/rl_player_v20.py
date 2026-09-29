@@ -219,20 +219,47 @@ RAGING_BULL = {"taurospaldeacombat": PokemonType.FIGHTING, "taurospaldeablaze": 
                "taurospaldeaaqua": PokemonType.WATER}
 
 
+# Lookups keyed by id(): poke-env's enums hash through a Python-level __hash__, which dominated the
+# featurizer's time when enum members were dict keys
+_TYPE_ID = {id(t): i for t, i in TYPE_IDX.items()}
+_CHART = {(id(a), id(d)): TYPE_CHART[d.name][a.name] for a in TYPES for d in TYPES}
+_NON_TYPES = {id(PokemonType.STELLAR), id(PokemonType.THREE_QUESTION_MARKS)}
+_STATUS_ID = {id(k): v for k, v in STATUS_POS.items() if k is not None}
+_EFFECT_GROUP = {id(e): g for g, (_, group) in enumerate(PK_EFFECTS) for e in group}
+_BOOSTED_ID = {id(e): pos for e, pos in BOOSTED_STAT_EFFECTS.items()}
+_STOCKPILE_ID = id(Effect.STOCKPILE)
+_MAGNET_RISE_ID = id(Effect.MAGNET_RISE)
+_SC_ID = {name: id(getattr(SideCondition, name)) for name in (
+    "SPIKES", "TOXIC_SPIKES", "STEALTH_ROCK", "STICKY_WEB", "REFLECT", "LIGHT_SCREEN",
+    "AURORA_VEIL", "TAILWIND", "SAFEGUARD", "MIST")}
+_EFF_CODE = {}
+
+
+def type_index(t):
+    return _TYPE_ID.get(id(t), 0)
+
+
 def _eff_code(mult):
     """Type effectiveness 0..4 as log2 / 3: immune -1, 1/4 -0.67, 1/2 -0.33, 1 0, 2 0.33, 4 0.67."""
-    return math.log2(max(mult, 0.125)) / 3.0
+    code = _EFF_CODE.get(mult)
+    if code is None:
+        code = _EFF_CODE[mult] = math.log2(max(mult, 0.125)) / 3.0
+    return code
 
 
 def type_mult(atk_type, def_types):
     """Damage multiplier of an attacking type against a list of defending types."""
-    if atk_type is None or atk_type in (PokemonType.STELLAR, PokemonType.THREE_QUESTION_MARKS):
+    if atk_type is None:
+        return 1.0
+    ia = id(atk_type)
+    if ia in _NON_TYPES:
         return 1.0
     m = 1.0
     for t in def_types:
-        if t is None or t in (PokemonType.STELLAR, PokemonType.THREE_QUESTION_MARKS):
-            continue
-        m *= TYPE_CHART[t.name][atk_type.name]
+        if t is not None:
+            v = _CHART.get((ia, id(t)))
+            if v is not None:  # Stellar / ??? defenders are neutral
+                m *= v
     return m
 
 
@@ -243,32 +270,132 @@ def move_priority(move):
         return 0
 
 
+_MOVE_STATIC = {}
+_SELF_TARGETS = ("SELF", "ADJACENT_ALLY_OR_SELF", "ALLIES")
+
+
+def move_static(move):
+    """Per-move-id data for move tokens (only Hidden Power varies per instance, and it isn't in
+    gen9). Raises KeyError for moves without dex data, e.g. recharge."""
+    mid = move.id
+    st = _MOVE_STATIC.get(mid)
+    if st is not None:
+        return st
+    cat = move.category
+    boosts, self_boost, target = move.boosts, move.self_boost, move.target
+    sb = tb = 0.0
+    if boosts:
+        if target is not None and target.name in _SELF_TARGETS:
+            sb += sum(boosts.values())
+        else:
+            tb += sum(boosts.values())
+    if self_boost:
+        sb += sum(self_boost.values())
+    secondary = move.secondary
+    sec = max((x.get("chance", 0) or 0 for x in secondary), default=0) / 100.0 if secondary else 0.0
+    flags = move.flags
+    status_cat = cat == MoveCategory.STATUS
+    st = {
+        "type": move.type,
+        "damaging": not status_cat,
+        "idx": move_index(mid),
+        "head": [move.base_power / 150.0, float(move.accuracy),
+                 1.0 if cat == MoveCategory.PHYSICAL else 0.0,
+                 1.0 if cat == MoveCategory.SPECIAL else 0.0,
+                 1.0 if status_cat else 0.0, move_priority(move) / 5.0],
+        "tail": [min(move.expected_hits / 5.0, 2.0), move.drain, move.recoil, move.heal,
+                 1.0 if move.self_switch else 0.0, 1.0 if move.force_switch else 0.0,
+                 1.0 if move.side_condition in HAZARD_CONDITIONS else 0.0,
+                 1.0 if mid in HAZARD_REMOVAL else 0.0,
+                 1.0 if move.status is not None else 0.0,
+                 max(min(sb / 4.0, 1.0), -1.0), max(min(tb / 4.0, 1.0), -1.0),
+                 1.0 if move.is_protect_move else 0.0,
+                 1.0 if (move.weather is not None or move.terrain is not None) else 0.0,
+                 sec, min(move.crit_ratio / 3.0, 1.0),
+                 1.0 if "contact" in flags else 0.0, 1.0 if "sound" in flags else 0.0,
+                 1.0 if move.breaks_protect else 0.0,
+                 1.0 if mid in ("struggle", "recharge") else 0.0,
+                 1.0 if move.volatile_status is not None else 0.0,
+                 1.0 if move.self_destruct else 0.0,
+                 1.0 if move.pseudo_weather == "trickroom" else 0.0],
+    }
+    _MOVE_STATIC[mid] = st
+    return st
+
+
 def effective_move_type(move, mon, battle, tera=None):
     """The type the move hits with, for the common type-changing cases.
 
     tera: None uses mon's current state; True/False evaluates it as if (not) terastallized.
     """
     mid = move.id
-    terastallized = mon.is_terastallized if tera is None else tera
-    if mid == "terablast" and terastallized and mon.tera_type is not None:
-        return mon.tera_type
-    if mid == "weatherball" and battle.weather:
-        return WEATHER_BALL.get(next(iter(battle.weather)), move.type)
-    if mid == "terrainpulse" and battle.fields:
+    mtype = move_static(move)["type"]
+    if mid == "terablast":
+        terastallized = mon.is_terastallized if tera is None else tera
+        if terastallized and mon.tera_type is not None:
+            return mon.tera_type
+    elif mid == "weatherball":
+        if battle.weather:
+            return WEATHER_BALL.get(next(iter(battle.weather)), mtype)
+    elif mid == "terrainpulse":
         for f in battle.fields:
             if f in TERRAIN_PULSE:
                 return TERRAIN_PULSE[f]
-    if mid == "ivycudgel":
-        return IVY_CUDGEL.get(mon.species, move.type)
-    if mid == "ragingbull":
-        return RAGING_BULL.get(mon.species, move.type)
-    if mid == "revelationdance":
-        return mon.types[0] if mon.types else move.type
-    if mid in ("judgment", "multiattack") and mon.species != mon.base_species:
-        return mon.types[0] if mon.types else move.type
-    if move.type == PokemonType.NORMAL and mon.ability in ATE_ABILITIES:
-        return ATE_ABILITIES[mon.ability]
-    return move.type
+    elif mid == "ivycudgel":
+        return IVY_CUDGEL.get(mon.species, mtype)
+    elif mid == "ragingbull":
+        return RAGING_BULL.get(mon.species, mtype)
+    elif mid == "revelationdance":
+        types = mon.types
+        return types[0] if types else mtype
+    elif mid in ("judgment", "multiattack") and mon.species != mon.base_species:
+        types = mon.types
+        return types[0] if types else mtype
+    if mtype is PokemonType.NORMAL:
+        ab = mon.ability
+        if ab in ATE_ABILITIES:
+            return ATE_ABILITIES[ab]
+    return mtype
+
+
+def _grounded(mon, gravity):
+    """poke-env's AbstractBattle.is_grounded, without enum hashing."""
+    if gravity:
+        return True
+    item = mon.item
+    if item == "ironball":
+        return True
+    ab = mon.ability
+    if ab == "levitate":
+        return False
+    if ab is None and "levitate" in mon.possible_abilities:
+        return False
+    if item == "airballoon":
+        return False
+    if mon.type_1 is PokemonType.FLYING or mon.type_2 is PokemonType.FLYING:
+        return False
+    for e in mon.effects:
+        if id(e) == _MAGNET_RISE_ID:
+            return False
+    return True
+
+
+def _effective_speed(mon, stats, tailwind):
+    spe = stats["spe"] * BOOST_MULT[mon.boosts.get("spe", 0)]
+    if mon.status is Status.PAR and mon.ability != "quickfeet":
+        spe *= 0.5
+    if mon.item == "choicescarf":
+        spe *= 1.5
+    if tailwind:
+        spe *= 2
+    return spe
+
+
+def _side_info(conds, gravity):
+    """(stealth rock, spikes layers, tailwind, gravity, {condition id: value}) for one side."""
+    ids = {id(k): v for k, v in conds.items()}
+    return (_SC_ID["STEALTH_ROCK"] in ids, ids.get(_SC_ID["SPIKES"], 0), _SC_ID["TAILWIND"] in ids,
+            gravity, ids)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -500,14 +627,7 @@ class Featurizer:
 
     @staticmethod
     def effective_speed(mon, stats, side_conditions):
-        spe = stats["spe"] * BOOST_MULT[mon.boosts.get("spe", 0)]
-        if mon.status == Status.PAR and mon.ability != "quickfeet":
-            spe *= 0.5
-        if mon.item == "choicescarf":
-            spe *= 1.5
-        if SideCondition.TAILWIND in side_conditions:
-            spe *= 2
-        return spe
+        return _effective_speed(mon, stats, SideCondition.TAILWIND in side_conditions)
 
     # ---- damage -----------------------------------------------------------------------------
     @staticmethod
@@ -527,17 +647,17 @@ class Featurizer:
         return lo / def_max_hp, hi / def_max_hp
 
     # ---- tokens -----------------------------------------------------------------------------
-    def _pokemon_token(self, battle, mon, own, stats, other, other_stats, other_side_cond,
-                       side_cond, own_tera, tr, key, req_ability=None):
-        """(idx, flt) for one Pokemon. other = the other side's active (or None)."""
+    def _pokemon_token(self, battle, mon, own, stats, other, side, own_tera, tr, key, req_ability=None):
+        """(idx, flt) for one Pokemon. side: _side_info of mon's side. other: None, or the other
+        side's active as (types, effective types of its damaging moves, effective speed)."""
         types = mon.types
-        t1 = TYPE_IDX.get(types[0], 0) if types else 0
-        t2 = TYPE_IDX.get(types[1], 0) if len(types) > 1 else 0
+        t1 = _TYPE_ID.get(id(types[0]), 0) if types else 0
+        t2 = _TYPE_ID.get(id(types[1]), 0) if len(types) > 1 else 0
         if own:
             tera_t = own_tera if own_tera is not None else (mon.tera_type or None)
-            tera_idx = TYPE_IDX.get(tera_t, 0) if tera_t is not None else TYPE_UNKNOWN
+            tera_idx = _TYPE_ID.get(id(tera_t), 0) if tera_t is not None else TYPE_UNKNOWN
         else:
-            tera_idx = TYPE_IDX.get(mon.tera_type, 0) if mon.is_terastallized else TYPE_UNKNOWN
+            tera_idx = _TYPE_ID.get(id(mon.tera_type), 0) if mon.is_terastallized else TYPE_UNKNOWN
         item = mon.item
         if item == GEN_DATA.UNKNOWN_ITEM:
             item_idx = ITEM_UNKNOWN
@@ -554,10 +674,10 @@ class Featurizer:
             move_index(last) if last else 0]
 
         status = mon.status
-        fainted = status == Status.FNT
+        fainted = status is Status.FNT
         st = [0.0] * 7
         if not fainted:
-            st[STATUS_POS.get(status, 0)] = 1.0
+            st[_STATUS_ID.get(id(status), 0)] = 1.0
         boosts = mon.boosts
         effects = mon.effects
         active = bool(mon.active)
@@ -570,47 +690,51 @@ class Featurizer:
             turns_in = min(since / 10.0, 1.0)
             first_turn = since == 1
         # entry hazard damage on switch-in, for this Pokemon's own side
+        sr, spikes, tailwind, gravity, _ = side
+        grounded = _grounded(mon, gravity)
         haz = 0.0
         if item != "heavydutyboots" and ability != "magicguard":
-            if SideCondition.STEALTH_ROCK in side_cond:
+            if sr:
                 haz += 0.125 * type_mult(PokemonType.ROCK, types)
-            layers = side_cond.get(SideCondition.SPIKES, 0)
-            grounded = battle.is_grounded(mon)
-            if layers and grounded:
-                haz += (0.0, 1 / 8, 1 / 6, 1 / 4)[min(layers, 3)]
-        else:
-            grounded = battle.is_grounded(mon)
+            if spikes and grounded:
+                haz += (0.0, 1 / 8, 1 / 6, 1 / 4)[min(spikes, 3)]
         # matchups against the other side's active
         off = d_stab = d_move = 0.0
         speed_share = 0.5
         if other is not None and not fainted:
-            other_types = other.types
+            other_types, other_move_types, other_speed = other
             att_types = [effective_move_type(m, mon, battle) for m in moves
-                         if m.category != MoveCategory.STATUS]
+                         if move_static(m)["damaging"]]
             if not own:
                 att_types += [t for t in mon.original_types if t is not None]
             if att_types:
                 off = _eff_code(max(type_mult(t, other_types) for t in att_types))
             d_stab = _eff_code(max((type_mult(t, types) for t in other_types if t is not None),
                                    default=1.0))
-            other_moves = [m for m in other.moves.values() if m.category != MoveCategory.STATUS]
-            if other_moves:
-                d_move = _eff_code(max(type_mult(effective_move_type(m, other, battle), types)
-                                       for m in other_moves))
-            my_spe = self.effective_speed(mon, stats, side_cond)
-            their_spe = self.effective_speed(other, other_stats, other_side_cond)
-            speed_share = my_spe / max(my_spe + their_spe, 1e-6)
+            if other_move_types:
+                d_move = _eff_code(max(type_mult(t, types) for t in other_move_types))
+            my_spe = _effective_speed(mon, stats, tailwind)
+            speed_share = my_spe / max(my_spe + other_speed, 1e-6)
         pp = [1.0, 1.0, 1.0, 1.0]
         if own:
             known_pp = tr.pp.get(key)
             if known_pp:
                 for i, m in enumerate(moves):
                     pp[i] = known_pp.get(m.id, 1.0)
+        flags = [0.0] * len(PK_EFFECTS)
         boosted = [0.0] * 5
-        for e in effects:
-            pos = BOOSTED_STAT_EFFECTS.get(e)
-            if pos is not None:
-                boosted[pos] = 1.0
+        stockpile = 0.0
+        if effects:
+            for e, count in effects.items():
+                ie = id(e)
+                g = _EFFECT_GROUP.get(ie)
+                if g is not None:
+                    flags[g] = 1.0
+                pos = _BOOSTED_ID.get(ie)
+                if pos is not None:
+                    boosted[pos] = 1.0
+                if ie == _STOCKPILE_ID:
+                    stockpile = min(count / 3.0, 1.0)
         counter = mon.status_counter
         flt = [
             1.0 if own else 0.0, 0.0, 1.0 if mon.revealed or not own else 0.0,
@@ -619,9 +743,11 @@ class Featurizer:
             stats["hp"] / 500.0, stats["atk"] / 500.0, stats["def"] / 500.0,
             stats["spa"] / 500.0, stats["spd"] / 500.0, stats["spe"] / 500.0,
         ] + st + [
-            min(counter / 3.0, 1.0) if status == Status.SLP else 0.0,
-            min(counter / 15.0, 1.0) if status == Status.TOX else 0.0,
-        ] + [boosts.get(b, 0) / 6.0 for b in BOOST_KEYS] + [
+            min(counter / 3.0, 1.0) if status is Status.SLP else 0.0,
+            min(counter / 15.0, 1.0) if status is Status.TOX else 0.0,
+            boosts.get("atk", 0) / 6.0, boosts.get("def", 0) / 6.0, boosts.get("spa", 0) / 6.0,
+            boosts.get("spd", 0) / 6.0, boosts.get("spe", 0) / 6.0,
+            boosts.get("accuracy", 0) / 6.0, boosts.get("evasion", 0) / 6.0,
             1.0 if mon.is_terastallized else 0.0,
             1.0 if tera_idx != TYPE_UNKNOWN else 0.0,
             1.0 if item_idx != ITEM_UNKNOWN else 0.0,
@@ -633,9 +759,7 @@ class Featurizer:
             1.0 if mon.preparing else 0.0,
             turns_in, min(haz, 1.0), 1.0 if grounded else 0.0,
             off, d_stab, d_move, speed_share,
-        ] + pp + [min(effects.get(Effect.STOCKPILE, 0) / 3.0, 1.0) if Effect.STOCKPILE in effects else 0.0]
-        flt += [1.0 if any(e in effects for e in group) else 0.0 for _, group in PK_EFFECTS]
-        flt += boosted
+        ] + pp + [stockpile] + flags + boosted
         return idx, flt
 
     @staticmethod
@@ -650,77 +774,38 @@ class Featurizer:
         flt[PK_FLT_POS["pp2"]] = flt[PK_FLT_POS["pp3"]] = 1.0
         return idx, flt
 
-    def _move_token(self, battle, move, me, opp, opp_stats, own_tera, tr, me_key, dmg):
+    def _move_token(self, battle, move, me, opp_types, opp_hp, own_tera, known_pp, dmg):
+        st = move_static(move)
         mid = move.id
-        cat = move.category
+        damaging = st["damaging"]
         mtype = effective_move_type(move, me, battle)
-        eff_mult = type_mult(mtype, opp.types) if opp is not None else 1.0
+        eff_mult = type_mult(mtype, opp_types) if opp_types is not None else 1.0
         orig = [t for t in me.original_types if t is not None]
-        stab = mtype in orig or (me.is_terastallized and mtype == me.tera_type)
+        stab = mtype in orig or (me.is_terastallized and mtype is me.tera_type)
         if own_tera is not None and not me.is_terastallized:
             tera_type = effective_move_type(move, me, battle, tera=False)
             if mid == "terablast":
-                tera_type = own_tera if own_tera != PokemonType.STELLAR else move.type
-            stab_tera = tera_type in orig or tera_type == own_tera or own_tera == PokemonType.STELLAR
-            eff_tera = type_mult(tera_type, opp.types) if opp is not None else 1.0
+                tera_type = own_tera if own_tera is not PokemonType.STELLAR else st["type"]
+            stab_tera = tera_type in orig or tera_type is own_tera or own_tera is PokemonType.STELLAR
+            eff_tera = type_mult(tera_type, opp_types) if opp_types is not None else 1.0
         else:
             stab_tera, eff_tera = stab, eff_mult
-        pp = 1.0
-        known_pp = tr.pp.get(me_key) if me_key else None
-        if known_pp:
-            pp = known_pp.get(mid, 1.0)
-        dlo = dhi = 0.0
-        ko_hi = ko_lo = 0.0
-        calc_ok = 0.0
+        pp = known_pp.get(mid, 1.0) if known_pp else 1.0
+        dlo = dhi = ko_hi = ko_lo = calc_ok = 0.0
         if dmg is not None:
             dlo, dhi = dmg
             calc_ok = 1.0
-            hp = opp.current_hp_fraction if opp is not None else 1.0
-            ko_hi = 1.0 if (dhi >= hp and dhi > 0) else 0.0
-            ko_lo = 1.0 if (dlo >= hp and dlo > 0) else 0.0
-        boosts = move.boosts
-        self_boost = move.self_boost
-        target = move.target
-        sb = 0.0
-        tb = 0.0
-        if boosts:
-            if target is not None and target.name in ("SELF", "ADJACENT_ALLY_OR_SELF", "ALLIES"):
-                sb += sum(boosts.values())
-            else:
-                tb += sum(boosts.values())
-        if self_boost:
-            sb += sum(self_boost.values())
-        secondary = move.secondary
-        sec = max((s.get("chance", 0) or 0 for s in secondary), default=0) / 100.0 if secondary else 0.0
-        flags = move.flags
-        idx = [move_index(mid), TYPE_IDX.get(mtype, 0)]
-        flt = [
-            1.0, move.base_power / 150.0, float(move.accuracy),
-            1.0 if cat == MoveCategory.PHYSICAL else 0.0,
-            1.0 if cat == MoveCategory.SPECIAL else 0.0,
-            1.0 if cat == MoveCategory.STATUS else 0.0,
-            move_priority(move) / 5.0, pp,
-            _eff_code(eff_mult) if cat != MoveCategory.STATUS else 0.0,
-            1.0 if (eff_mult == 0 and cat != MoveCategory.STATUS) else 0.0,
+            ko_hi = 1.0 if (dhi >= opp_hp and dhi > 0) else 0.0
+            ko_lo = 1.0 if (dlo >= opp_hp and dlo > 0) else 0.0
+        idx = [st["idx"], _TYPE_ID.get(id(mtype), 0)]
+        flt = [1.0] + st["head"] + [
+            pp,
+            _eff_code(eff_mult) if damaging else 0.0,
+            1.0 if (eff_mult == 0 and damaging) else 0.0,
             1.0 if stab else 0.0, 1.0 if stab_tera else 0.0,
-            _eff_code(eff_tera) if cat != MoveCategory.STATUS else 0.0,
+            _eff_code(eff_tera) if damaging else 0.0,
             min(dlo, 2.0), min(dhi, 2.0), ko_hi, ko_lo, calc_ok,
-            min(move.expected_hits / 5.0, 2.0), move.drain, move.recoil, move.heal,
-            1.0 if move.self_switch else 0.0, 1.0 if move.force_switch else 0.0,
-            1.0 if move.side_condition in HAZARD_CONDITIONS else 0.0,
-            1.0 if mid in HAZARD_REMOVAL else 0.0,
-            1.0 if move.status is not None else 0.0,
-            max(min(sb / 4.0, 1.0), -1.0), max(min(tb / 4.0, 1.0), -1.0),
-            1.0 if move.is_protect_move else 0.0,
-            1.0 if (move.weather is not None or move.terrain is not None) else 0.0,
-            sec, min(move.crit_ratio / 3.0, 1.0),
-            1.0 if "contact" in flags else 0.0, 1.0 if "sound" in flags else 0.0,
-            1.0 if move.breaks_protect else 0.0,
-            1.0 if mid in ("struggle", "recharge") else 0.0,
-            1.0 if move.volatile_status is not None else 0.0,
-            1.0 if move.self_destruct else 0.0,
-            1.0 if move.pseudo_weather == "trickroom" else 0.0,
-        ]
+        ] + st["tail"]
         return idx, flt
 
     @staticmethod
@@ -734,19 +819,24 @@ class Featurizer:
         return [move_idx, 0], flt
 
     @staticmethod
-    def _side_features(conds, turn):
-        def t(c, n):
-            return min((turn - conds[c]) / n, 1.0) if c in conds else 0.0
+    def _side_features(side, turn):
+        ids = side[4]
+        g = ids.get
+
+        def t(name, n):
+            v = g(_SC_ID[name])
+            return min((turn - v) / n, 1.0) if v is not None else 0.0
+
         return [
-            conds.get(SideCondition.SPIKES, 0) / 3.0, conds.get(SideCondition.TOXIC_SPIKES, 0) / 2.0,
-            1.0 if SideCondition.STEALTH_ROCK in conds else 0.0,
-            1.0 if SideCondition.STICKY_WEB in conds else 0.0,
-            1.0 if SideCondition.REFLECT in conds else 0.0, t(SideCondition.REFLECT, 8.0),
-            1.0 if SideCondition.LIGHT_SCREEN in conds else 0.0, t(SideCondition.LIGHT_SCREEN, 8.0),
-            1.0 if SideCondition.AURORA_VEIL in conds else 0.0, t(SideCondition.AURORA_VEIL, 8.0),
-            1.0 if SideCondition.TAILWIND in conds else 0.0, t(SideCondition.TAILWIND, 4.0),
-            1.0 if SideCondition.SAFEGUARD in conds else 0.0,
-            1.0 if SideCondition.MIST in conds else 0.0,
+            g(_SC_ID["SPIKES"], 0) / 3.0, g(_SC_ID["TOXIC_SPIKES"], 0) / 2.0,
+            1.0 if _SC_ID["STEALTH_ROCK"] in ids else 0.0,
+            1.0 if _SC_ID["STICKY_WEB"] in ids else 0.0,
+            1.0 if _SC_ID["REFLECT"] in ids else 0.0, t("REFLECT", 8.0),
+            1.0 if _SC_ID["LIGHT_SCREEN"] in ids else 0.0, t("LIGHT_SCREEN", 8.0),
+            1.0 if _SC_ID["AURORA_VEIL"] in ids else 0.0, t("AURORA_VEIL", 8.0),
+            1.0 if _SC_ID["TAILWIND"] in ids else 0.0, t("TAILWIND", 4.0),
+            1.0 if _SC_ID["SAFEGUARD"] in ids else 0.0,
+            1.0 if _SC_ID["MIST"] in ids else 0.0,
         ]
 
     @staticmethod
@@ -769,15 +859,26 @@ class Featurizer:
                 out[p["ident"]] = (tera, to_id_str(ab) if ab else None)
         return out
 
+    @staticmethod
+    def _other_info(mon, stats, side, battle):
+        """What tokens on the other side need about this active: types, effective types of its
+        known damaging moves, effective speed."""
+        if mon is None or stats is None:
+            return None
+        move_types = [effective_move_type(m, mon, battle) for m in mon.moves.values()
+                      if move_static(m)["damaging"]]
+        return mon.types, move_types, _effective_speed(mon, stats, side[2])
+
     def featurize(self, battle):
         tr = self.tracker(battle)
         turn = battle.turn
         me = battle.active_pokemon
         opp = battle.opponent_active_pokemon
-        side_cond = battle.side_conditions
-        opp_side_cond = battle.opponent_side_conditions
+        fields = battle.fields
+        gravity = Field.GRAVITY in fields
+        own_side = _side_info(battle.side_conditions, gravity)
+        opp_side = _side_info(battle.opponent_side_conditions, gravity)
         req_info = self.own_request_info(battle)
-        tera_types = {k: v[0] for k, v in req_info.items()}
         team = battle.team
         opp_team = battle.opponent_team
 
@@ -789,12 +890,14 @@ class Featurizer:
         opp_key = self._key_of(opp_team, opp) if opp is not None else None
         me_stats = own_stats.get(me_key) if me_key else None
         o_stats = opp_stats.get(opp_key) if opp_key else None
+        opp_info = self._other_info(opp, o_stats, opp_side, battle)   # seen by own tokens
+        me_info = self._other_info(me, me_stats, own_side, battle)    # seen by opponent tokens
 
         idx, flt = [], []
         for k, mon in own_items:
-            i, f = self._pokemon_token(battle, mon, True, own_stats[k], opp, o_stats, opp_side_cond,
-                                       side_cond, tera_types.get(k), tr, k,
-                                       req_info.get(k, (None, None))[1])
+            tera, ability = req_info.get(k, (None, None))
+            i, f = self._pokemon_token(battle, mon, True, own_stats[k], opp_info, own_side, tera,
+                                       tr, k, ability)
             idx += i
             flt += f
         for _ in range(6 - len(own_items)):
@@ -803,8 +906,8 @@ class Featurizer:
             idx += i
             flt += f
         for k, mon in opp_items:
-            i, f = self._pokemon_token(battle, mon, False, opp_stats[k], me, me_stats, side_cond,
-                                       opp_side_cond, None, tr, k)
+            i, f = self._pokemon_token(battle, mon, False, opp_stats[k], me_info, opp_side, None,
+                                       tr, k)
             idx += i
             flt += f
         for _ in range(6 - len(opp_items)):
@@ -832,15 +935,18 @@ class Featurizer:
             finally:
                 opp._stats = saved
 
-        own_tera = tera_types.get(me_key) if me_key else None
+        own_tera = req_info.get(me_key, (None, None))[0] if me_key else None
+        known_pp = tr.pp.get(me_key) if me_key else None
+        opp_types = opp.types if opp is not None else None
+        opp_hp = opp.current_hp_fraction if opp is not None else 1.0
         for i in range(4):
             if i < len(moves) and me is not None:
                 if moves[i].id == "recharge":
                     mi, mf = self._special_move_token(MOVE_RECHARGE)
                 else:
                     try:
-                        mi, mf = self._move_token(battle, moves[i], me, opp, o_stats, own_tera, tr,
-                                                  me_key, our_dmg[i])
+                        mi, mf = self._move_token(battle, moves[i], me, opp_types, opp_hp, own_tera,
+                                                  known_pp, our_dmg[i])
                     except (KeyError, AttributeError, TypeError):
                         # a move with missing dex data; counted so the checks can report it
                         self.fallbacks += 1
@@ -862,7 +968,6 @@ class Featurizer:
             wv[0] = 1.0
         tv = [0.0] * 5
         terrain_t = 0.0
-        fields = battle.fields
         terrain = [f for f in fields if f in TERRAIN_POS]
         if terrain:
             tv[TERRAIN_POS[terrain[0]]] = 1.0
@@ -873,21 +978,19 @@ class Featurizer:
         own_alive = sum(1 for m in team.values() if not m.fainted)
         opp_alive = 6 - sum(1 for m in opp_team.values() if m.fainted)
         speed_share = 0.5
-        if me is not None and opp is not None and me_stats and o_stats:
-            a = self.effective_speed(me, me_stats, side_cond)
-            b = self.effective_speed(opp, o_stats, opp_side_cond)
+        if me_info is not None and opp_info is not None:
+            a, b = me_info[2], opp_info[2]
             speed_share = a / max(a + b, 1e-6)
         my_hp = me.current_hp_fraction if me is not None else 0.0
         opp_best = max((d[1] for d in opp_dmg), default=0.0)
         our_best = max((d[1] for d in our_dmg if d is not None), default=0.0)
-        opp_hp = opp.current_hp_fraction if opp is not None else 1.0
         fd = wv + [weather_t] + tv + [terrain_t] + [
             1.0 if tr_on else 0.0,
             min((turn - fields[Field.TRICK_ROOM]) / 5.0, 1.0) if tr_on else 0.0,
-            1.0 if Field.GRAVITY in fields else 0.0,
+            1.0 if gravity else 0.0,
             1.0 if Field.MAGIC_ROOM in fields else 0.0,
             1.0 if Field.WONDER_ROOM in fields else 0.0,
-        ] + self._side_features(side_cond, turn) + self._side_features(opp_side_cond, turn) + [
+        ] + self._side_features(own_side, turn) + self._side_features(opp_side, turn) + [
             min(turn / 50.0, 2.0), math.log1p(turn) / 4.0,
             1.0 if battle.can_tera else 0.0,
             1.0 if battle.used_tera else 0.0,
@@ -948,6 +1051,14 @@ def hold_requests_until_log(player, timeout=0.05):
 
     player.ps_client._handle_battle_message = handler
     player.request_hold_stats = stats
+
+
+def disable_turn_snapshots():
+    """At every |turn| poke-env copies all 12 Pokemon into battle.observations[turn]
+    (ObservedPokemon, including copies of every Move). Nothing in poke-env or this repo reads those
+    copies (the featurizer only uses each turn's events), so training processes skip them."""
+    from poke_env.battle.observed_pokemon import ObservedPokemon
+    ObservedPokemon.from_pokemon = staticmethod(lambda mon: None)
 
 
 class EnvTimeout(Exception):

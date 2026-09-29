@@ -68,7 +68,8 @@ CONFIG = {
     "ent_coef": 0.0588,
     "vf_coef": 0.4375,
     "zero_avoid_coef": 0.005,        # KL(uniform over legal || pi); Jaxcalibur gives no value
-    "update_threads": None,          # torch threads for the update (None: all cores)
+    "update_threads": None,          # torch threads for a CPU update (None: all cores)
+    "update_device": "auto",         # cuda, else mps (Apple GPU: 2.7x the M3's CPU), else cpu
 
     # Opponents
     "opponents": "mix",              # "mix" or "heuristic" (SimpleHeuristics only)
@@ -142,7 +143,8 @@ def gae(values, final_reward, gamma, lam):
 class Worker:
     def __init__(self, wid, cfg):
         torch.set_num_threads(1)
-        from envs.rl_player_v20 import Featurizer
+        from envs.rl_player_v20 import Featurizer, disable_turn_snapshots
+        disable_turn_snapshots()
         from networks.v20_policy import V20Net
         from poke_env.player import SimpleHeuristicsPlayer
         self.wid, self.cfg = wid, cfg
@@ -219,9 +221,12 @@ class Worker:
                 else:
                     acts[a2] = opponent_decision(opp, b2)
             if live:
-                feats = [self.fz.featurize(b) for _, _, b in live]
+                # features are stored as float16; round them before acting so the stored sample is
+                # exactly what the policy saw (the PPO ratio starts at 1)
+                feats = [(i, f.astype(np.float16), m) for i, f, m in
+                         (self.fz.featurize(b) for _, _, b in live)]
                 idx = torch.as_tensor(np.stack([f[0] for f in feats]))
-                flt = torch.as_tensor(np.stack([f[1] for f in feats]))
+                flt = torch.as_tensor(np.stack([f[1] for f in feats]).astype(np.float32))
                 mask = torch.as_tensor(np.stack([f[2] for f in feats]))
                 with torch.inference_mode():
                     act, logp, val = self.net.act(idx, flt, mask)
@@ -230,7 +235,7 @@ class Worker:
                     acts[agent] = a
                     n_dec[side] += 1
                     if record[side]:
-                        traj[side].append((feats[j][0], feats[j][1], feats[j][2], a,
+                        traj[side].append((feats[j][0].astype(np.int16), feats[j][1], feats[j][2], a,
                                            float(logp[j]), float(val[j])))
             if max(n_dec.values()) > self.cfg["max_decisions"]:
                 self.errors["game too long (dropped)"] += 1
@@ -293,8 +298,8 @@ class Worker:
         stats["collect_s"] = time.time() - t0
         stats["errors"] = dict(self.errors)
         data = {
-            "idx": np.stack(buf["idx"]).astype(np.int16),
-            "flt": np.stack(buf["flt"]).astype(np.float32),
+            "idx": np.stack(buf["idx"]),
+            "flt": np.stack(buf["flt"]),
             "mask": np.stack(buf["mask"]),
             "act": np.asarray(buf["act"], dtype=np.int64),
             "logp": np.asarray(buf["logp"], dtype=np.float32),
@@ -332,55 +337,20 @@ def worker_main(wid, cfg, conn):
 
 
 # =============================================================================================
-# Evaluation (its own process, fresh env each time)
-def play_eval_games(policy, opponent, n_games, port, name="ev", progress=None):
-    """policy: V20Policy for side 1; opponent: anything opponent_decision accepts.
-    Returns (wins, losses, ties, mean decisions per game)."""
-    from envs.rl_player_v20 import RLEnvV20
-    from players.v20_player import opponent_decision
-    from poke_env.ps_client import AccountConfiguration
-    uid = uuid.uuid4().hex[:4]
-    env = RLEnvV20(server_configuration=server_config(port),
-                   account_configuration1=AccountConfiguration.generate(f"{name}a{uid}", rand=True),
-                   account_configuration2=AccountConfiguration.generate(f"{name}b{uid}", rand=True))
-    wins = losses = ties = 0
-    lens = []
-    try:
-        for g in range(n_games):
-            env.reset()
-            a1, a2 = env.agent1.username, env.agent2.username
-            n = 0
-            while not env.battle1.finished:
-                acts = {a1: 0, a2: 0}
-                if env.agent1_to_move and not env.battle1.finished:
-                    acts[a1] = policy.action(env.battle1)
-                    n += 1
-                if env.agent2_to_move and not env.battle2.finished:
-                    acts[a2] = opponent_decision(opponent, env.battle2)
-                env.step(acts)
-            lens.append(n)
-            won = env.battle1.won
-            wins += won is True
-            losses += won is False
-            ties += won is None
-            if progress and (g + 1) % progress == 0:
-                print(f"    {g + 1}/{n_games}: {wins / (g + 1):.1%}", flush=True)
-    finally:
-        # close without waiting, so a stuck battle can't block the caller
-        env.close(force=True, wait=False)
-    return wins, losses, ties, float(np.mean(lens)) if lens else 0.0
-
-
+# Evaluation (its own process, a fresh env each time: eval/v20_eval.py)
 def eval_main(snapshot_path, step, n_games, port, queue):
     torch.set_num_threads(1)
     try:
+        from envs.rl_player_v20 import disable_turn_snapshots
+        disable_turn_snapshots()
+        from eval.v20_eval import play_games
         from players.v20_player import V20Policy
         from poke_env.player import SimpleHeuristicsPlayer
         policy = V20Policy.load(snapshot_path, deterministic=True)
         sh = SimpleHeuristicsPlayer(battle_format="gen9randombattle", start_listening=False)
         t0 = time.time()
-        wins, losses, ties, mean_len = play_eval_games(policy, sh, n_games, port, name="ev")
-        queue.put(("eval", step, wins, wins + losses + ties, mean_len, time.time() - t0))
+        r = play_games(policy, sh, n_games, port, seat=1, name="ev")
+        queue.put(("eval", step, r["wins"], r["games"], r["mean_len"], time.time() - t0))
     except Exception:
         queue.put(("eval_error", step, traceback.format_exc()))
 
@@ -429,25 +399,37 @@ def explained_variance(y_pred, y_true):
     return float("nan") if var == 0 else float(1 - np.var(y_true - y_pred) / var)
 
 
-def ppo_update(model, optimizer, data, cfg):
-    idx = torch.as_tensor(data["idx"].astype(np.int64))
-    flt = torch.as_tensor(data["flt"])
-    mask = torch.as_tensor(data["mask"])
-    act = torch.as_tensor(data["act"])
-    old_logp = torch.as_tensor(data["logp"])
-    old_val = torch.as_tensor(data["val"])
-    advs = torch.as_tensor(data["adv"])
-    rets = torch.as_tensor(data["ret"])
+def update_device(cfg):
+    want = cfg.get("update_device", "auto")
+    if want == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    return torch.device(want)
+
+
+def ppo_update(model, optimizer, data, cfg, device):
+    # int16 indices and float16 features stay compact on the device; each minibatch is widened
+    idx = torch.as_tensor(data["idx"]).to(device)
+    flt = torch.as_tensor(data["flt"]).to(device)
+    mask = torch.as_tensor(data["mask"]).to(device)
+    act = torch.as_tensor(data["act"]).to(device)
+    old_logp = torch.as_tensor(data["logp"]).to(device)
+    old_val = torch.as_tensor(data["val"]).to(device)
+    advs = torch.as_tensor(data["adv"]).to(device)
+    rets = torch.as_tensor(data["ret"]).to(device)
     N = len(act)
     bs = cfg["batch_size"]
     clip, clip_vf = cfg["clip_range"], cfg["clip_range_vf"]
-    logs = defaultdict(list)
+    logs = defaultdict(list)  # device tensors, read once at the end (no per-step syncs)
     model.train()
     for _ in range(cfg["n_epochs"]):
-        perm = torch.randperm(N)
+        perm = torch.randperm(N).to(device)
         for start in range(0, N, bs):
             mb = perm[start:start + bs]
-            logp, ent, val, kl_u = model.evaluate_actions(idx[mb], flt[mb], mask[mb], act[mb])
+            logp, ent, val, kl_u = model.evaluate_actions(idx[mb].long(), flt[mb].float(), mask[mb], act[mb])
             adv = advs[mb]
             if len(mb) > 1:
                 adv = (adv - adv.mean()) / (adv.std() + 1e-8)
@@ -468,16 +450,21 @@ def ppo_update(model, optimizer, data, cfg):
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["max_grad_norm"])
             optimizer.step()
             with torch.no_grad():
-                logs["approx_kl"].append(float(((ratio - 1) - log_ratio).mean()))
-                logs["clip_fraction"].append(float(((ratio - 1).abs() > clip).float().mean()))
-                logs["policy_gradient_loss"].append(float(pg))
-                logs["value_loss"].append(float(v_loss))
-                logs["entropy_loss"].append(float(ent_loss))
-                logs["zero_avoid_kl"].append(float(za))
-                logs["loss"].append(float(loss))
+                logs["approx_kl"].append(((ratio - 1) - log_ratio).mean())
+                logs["clip_fraction"].append(((ratio - 1).abs() > clip).float().mean())
+                logs["policy_gradient_loss"].append(pg.detach())
+                logs["value_loss"].append(v_loss.detach())
+                logs["entropy_loss"].append(ent_loss.detach())
+                logs["zero_avoid_kl"].append(za.detach())
+                logs["loss"].append(loss.detach())
     model.eval()
-    out = {k: float(np.mean(v)) for k, v in logs.items()}
+    out = {k: float(torch.stack(v).mean()) for k, v in logs.items()}
     out["explained_variance"] = explained_variance(data["val"], data["ret"])
+    del idx, flt, mask, act, old_logp, old_val, advs, rets, logs
+    if device.type == "mps":
+        torch.mps.empty_cache()
+    elif device.type == "cuda":
+        torch.cuda.empty_cache()
     return out
 
 
@@ -492,7 +479,8 @@ class Trainer:
         self.p = paths(cfg)
         os.makedirs(cfg["model_dir"], exist_ok=True)
         os.makedirs(self.p["evals"], exist_ok=True)
-        self.model = V20Net(cfg["net_config"])
+        self.device = update_device(cfg)
+        self.model = V20Net(cfg["net_config"]).to(self.device)
         self.optimizer = torch.optim.Adam(
             [{"params": self.model.embedding_parameters(), "lr": cfg["lr_initial"] * cfg["embed_lr_mult"],
               "name": "embeddings"},
@@ -525,7 +513,7 @@ class Trainer:
             return False
         ckpt = torch.load(self.p["latest"], map_location="cpu", weights_only=False)
         self.model.load_state_dict(ckpt["model"])
-        self.optimizer.load_state_dict(ckpt["optimizer"])
+        self.optimizer.load_state_dict(ckpt["optimizer"])  # moves its state to the params' device
         self.step, self.games, self.update_n = ckpt["step"], ckpt["games"], ckpt["update"]
         self.eval_state = ckpt.get("eval_state", self.eval_state)
         saved = ckpt.get("config", {})
@@ -677,6 +665,7 @@ class Trainer:
               f"eval port {cfg['eval_port']}")
         print(f"  opponents: {cfg['opponents']} | steps/update {cfg['steps_per_update']:,} | "
               f"LR horizon {cfg['total_timesteps']:,} | stop at {stop_at:,}")
+        print(f"  update device: {self.device}")
         print(f"  PPO: gamma {cfg['gamma']} lambda {cfg['gae_lambda']} clip {cfg['clip_range']} "
               f"vf-clip {cfg['clip_range_vf']} epochs {cfg['n_epochs']} batch {cfg['batch_size']} "
               f"ent {cfg['ent_coef']} vf {cfg['vf_coef']} zero-avoid {cfg['zero_avoid_coef']}")
@@ -699,10 +688,11 @@ class Trainer:
                     continue
                 data = {k: np.concatenate([r[1][k] for r in results]) for k in results[0][1]}
                 stats = [r[2] for r in results]
+                del results
                 n = len(data["act"])
                 t1 = time.time()
                 torch.set_num_threads(threads)
-                logs = ppo_update(self.model, self.optimizer, data, cfg)
+                logs = ppo_update(self.model, self.optimizer, data, cfg, self.device)
                 update_s = time.time() - t1
                 prev = self.step
                 self.step += n
@@ -710,6 +700,7 @@ class Trainer:
                 games = sum(s["games"] for s in stats)
                 self.games += games
                 self.log(logs, stats, n, games, lr, collect_s, update_s)
+                del data
                 if self.step // cfg["save_freq"] > prev // cfg["save_freq"]:
                     self.save()
                     print(f">>> Checkpoint @ {self.step:,} steps", flush=True)
@@ -723,7 +714,7 @@ class Trainer:
                 self.poll_evals()
         except KeyboardInterrupt:
             interrupted = True
-            print("\n>>> Interrupted; saving", flush=True)
+            print("\n>>> Interrupted (Ctrl+C or SIGTERM); saving", flush=True)
         self.save()
         if not interrupted:
             if self.step >= cfg["total_timesteps"]:
@@ -791,7 +782,13 @@ class Trainer:
               flush=True)
 
 
+def _stop_on_sigterm(signum, frame):
+    raise KeyboardInterrupt
+
+
 def main():
+    import signal
+    signal.signal(signal.SIGTERM, _stop_on_sigterm)
     ap = argparse.ArgumentParser(description="v20 PPO training")
     ap.add_argument("--version", default=None)
     ap.add_argument("--timesteps", type=int, default=None, help="LR schedule horizon")
@@ -806,6 +803,7 @@ def main():
     ap.add_argument("--eval-episodes", type=int, default=None)
     ap.add_argument("--save-freq", type=int, default=None)
     ap.add_argument("--update-threads", type=int, default=None)
+    ap.add_argument("--update-device", default=None, help="auto (default), cpu, mps or cuda")
     ap.add_argument("--seed", type=int, default=None)
     args = ap.parse_args()
     cfg = dict(CONFIG)
@@ -814,7 +812,8 @@ def main():
                      ("eval_port", "eval_port"), ("opponents", "opponents"),
                      ("steps_per_update", "steps_per_update"), ("eval_freq", "eval_freq"),
                      ("eval_episodes", "n_eval_episodes"), ("save_freq", "save_freq"),
-                     ("update_threads", "update_threads"), ("seed", "seed")):
+                     ("update_threads", "update_threads"), ("update_device", "update_device"),
+                     ("seed", "seed")):
         v = getattr(args, arg)
         if v is not None:
             cfg[key] = v

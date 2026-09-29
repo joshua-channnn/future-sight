@@ -125,6 +125,11 @@ def create_eval_env(opponent, arch_info, port=EVAL_PORT):
         account_configuration2=AccountConfiguration.generate(f"EvalOpp-{uid}", rand=True),
     )
 
+    # This Showdown fork sends each request before the turn's log; decide after the log
+    from envs.rl_player_v20 import hold_requests_until_log
+    hold_requests_until_log(rl_env.agent1)
+    hold_requests_until_log(rl_env.agent2)
+
     wrapped = SingleAgentWrapper(rl_env, opponent)
     env = MaskablePokeEnvWrapper(wrapped, rl_env)
     env = TimeLimit(env, max_episode_steps=500)
@@ -219,8 +224,66 @@ def analyze_actions(action_counts):
         print(f"    {name:>12}: {count:>7,} ({100*count/total:>5.1f}%) {bar}")
 
 
+def opponent_player(path, deterministic, port):
+    """An env-stepped opponent for either checkpoint kind: V20Player for v20 .pt files, PPOPlayer
+    for SB3 zips."""
+    if path.endswith(".pt"):
+        from players.v20_player import V20Player
+        return V20Player(model_path=path, deterministic=deterministic,
+                         battle_format="gen9randombattle",
+                         server_configuration=get_server_config(port), start_listening=False)
+    return PPOPlayer(model_path=path, data_dir=MODEL_CONFIG["data_dir"], deterministic=deterministic,
+                     battle_format="gen9randombattle", server_configuration=get_server_config(port),
+                     start_listening=False)
+
+
+def main_v20(args):
+    """Evaluate a v20 checkpoint (.pt): the v20 env, the v20 policy, any opponent."""
+    from players.v20_player import V20Policy, load_opponent
+    from eval.v20_eval import play_games, print_actions
+    from poke_env.player import RandomPlayer, SimpleHeuristicsPlayer
+    policy = V20Policy.load(args.model, deterministic=True)
+    opponents = {}
+    if args.opponents in ("all", "random"):
+        opponents["RandomPlayer"] = RandomPlayer(battle_format="gen9randombattle", start_listening=False)
+    if args.opponents in ("all", "simple"):
+        opponents["SimpleHeuristics"] = SimpleHeuristicsPlayer(battle_format="gen9randombattle",
+                                                               start_listening=False)
+    if args.opponents in ("all", "model") and args.opp_model:
+        opponents[f"Model({os.path.basename(args.opp_model)})"] = load_opponent(
+            args.opp_model, deterministic=args.opp_deterministic, data_dir=MODEL_CONFIG["data_dir"])
+    elif args.opponents == "model":
+        print("ERROR: --opp-model is required when opponents='model'")
+        sys.exit(1)
+    seats = {"1": [1], "2": [2], "both": [1, 2]}[args.seat]
+    print("=" * 70)
+    print(f"Pokemon RL - Evaluation (v20)\nModel: {args.model}\nBattles per opponent per seat: "
+          f"{args.battles} | seats: {seats}")
+    print("=" * 70)
+    results = {}
+    for name, opp in opponents.items():
+        for seat in seats:
+            print(f"\nTesting vs {name} (seat {seat})...")
+            r = play_games(policy, opp, args.battles, args.port, seat=seat, progress=100)
+            results[(name, seat)] = r
+            print(f"  Win rate: {r['win_rate']:.1%} ± {r['ci_95']:.1%} (95% CI) | "
+                  f"W/L/T {r['wins']}/{r['losses']}/{r['ties']} | avg length {r['mean_len']:.1f} decisions")
+        if len(seats) == 2:
+            w = sum(results[(name, s)]["wins"] for s in seats)
+            n = sum(results[(name, s)]["games"] for s in seats)
+            p = w / max(n, 1)
+            print(f"  Both seats: {p:.1%} ± {1.96 * np.sqrt(p * (1 - p) / max(n, 1)):.1%} over {n} games")
+    if results:
+        print_actions(list(results.values())[-1]["action_counts"])
+    print("\n" + "=" * 70 + "\nSUMMARY\n" + "=" * 70)
+    print(f"{'Opponent':<34} {'Seat':>4} {'Wins':>6} {'Games':>6} {'Win Rate':>9} {'95% CI':>8}")
+    for (name, seat), r in results.items():
+        print(f"{name:<34} {seat:>4} {r['wins']:>6} {r['games']:>6} {r['win_rate']:>8.1%} ±{r['ci_95']:>6.1%}")
+    return results
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate v17.2/v17.3sp/v18 Pokemon RL model")
+    parser = argparse.ArgumentParser(description="Evaluate a Pokemon RL model (v17-v19 SB3 zips, v20 .pt)")
     parser.add_argument("--model", type=str,
                         default="models/ppo_pokemon_6v6_v18.3_best",
                         help="Path to model (auto-detects architecture)")
@@ -235,7 +298,13 @@ def main():
                         help="Use deterministic actions for opponent model")
     parser.add_argument("--port", type=int, default=EVAL_PORT,
                         help="Pokemon Showdown server port")
+    parser.add_argument("--seat", choices=["1", "2", "both"], default="1",
+                        help="v20 models: play as the challenger (1, p1), the challenged side (2), or both")
     args = parser.parse_args()
+    if args.model.endswith(".pt") or os.path.exists(args.model + ".pt"):
+        if not args.model.endswith(".pt"):
+            args.model += ".pt"
+        return main_v20(args)
 
     n_battles = args.battles
 
@@ -289,14 +358,8 @@ def main():
                 sys.exit(1)
             # Skip model opponent if --opponents=all and no --opp-model given
         else:
-            opponents[f"Model({os.path.basename(opp_model_path)})"] = PPOPlayer(
-                model_path=opp_model_path,
-                data_dir=MODEL_CONFIG["data_dir"],
-                deterministic=True,
-                battle_format="gen9randombattle",
-                server_configuration=get_server_config(args.port),
-                start_listening=False,
-            )
+            opponents[f"Model({os.path.basename(opp_model_path)})"] = opponent_player(
+                opp_model_path, deterministic=True, port=args.port)
 
     if not opponents:
         print("ERROR: No opponents selected")
