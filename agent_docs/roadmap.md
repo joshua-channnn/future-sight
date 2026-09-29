@@ -72,7 +72,8 @@
    block.
 2. Done: v19 trained from scratch to 10M steps as the clean baseline (results above). Compare step 3
    against its eval curve at equal steps, with the same 20M learning-rate schedule.
-3. Replace SB3 with a small CleanRL-style PPO loop (~300 lines), trained from scratch, with:
+3. (Design and handoff: `step3_handoff.md`.) Replace SB3 with a small CleanRL-style PPO loop
+   (~300 lines), trained from scratch, with:
    per-token action heads (each bench Pokémon scores its own switch; one shared scorer gives each
    move a move logit and a tera+move logit), a shared trunk, two-sided self-play (record both
    players when both run the current policy, as Wang did), legality-only masks plus Jaxcalibur's

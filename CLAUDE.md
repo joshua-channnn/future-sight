@@ -44,3 +44,4 @@ built on poke-env and Stable-Baselines3 `MaskablePPO`. The goal is a stronger bo
 - evaluation or Foul Play: `agent_docs/evaluation.md`
 - training on Google Cloud: `agent_docs/cloud.md`
 - architecture changes or deciding what to do next: `agent_docs/roadmap.md`
+- step 3 (v20: custom PPO loop, per-token action heads): `agent_docs/step3_handoff.md`

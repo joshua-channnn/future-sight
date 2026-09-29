@@ -9,7 +9,7 @@ What worked for the v19 run (September 2026). Scripts are in `cloud/`.
 - Spot (about $0.81/hour) was preempted after 2 minutes. Nothing restarts a preempted VM, so each
   preemption stops the run until someone restarts it.
 - 20 envs collect about 540 steps/s (SB3 steps envs in lockstep, so more cores barely help); the
-  10M-step v19 run took about 7.5 hours of training, about $10.
+  10M-step v19 run took about 9 hours of training, about $12.
 - A stopped VM still bills its 50 GB disk (about $5/month). Delete the VM when a run is done.
 
 ## Running
