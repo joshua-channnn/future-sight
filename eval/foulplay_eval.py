@@ -19,6 +19,7 @@ Snow -> Snowscape rename in fp/battle/protocol.py.
    --search-parallelism for a stronger (slower) opponent.
 4. From pokemon-rl/:
      python -m eval.foulplay_eval --games 100 --port 8005 --opponent FoulPlayLocal7291
+   --model takes a v20 checkpoint (.pt, the default) or an SB3 zip (v17-v19).
 """
 import argparse
 import asyncio
@@ -30,6 +31,7 @@ from poke_env.ps_client import AccountConfiguration
 from poke_env.ps_client.server_configuration import ServerConfiguration
 
 from players.ppo_player import PPOPlayer
+from players.v20_player import V20Player
 
 
 async def wait_for_battles(player, n_finished, timeout):
@@ -43,7 +45,7 @@ async def wait_for_battles(player, n_finished, timeout):
 
 async def main():
     parser = argparse.ArgumentParser(description="Evaluate a model against a local Foul Play bot")
-    parser.add_argument("--model", default="models/ppo_pokemon_6v6_v18.3_best")
+    parser.add_argument("--model", default="models/ppo_pokemon_6v6_v20.pt")
     parser.add_argument("--games", type=int, default=100)
     parser.add_argument("--port", type=int, default=8005)
     parser.add_argument("--opponent", default="FoulPlayLocal7291",
@@ -52,10 +54,7 @@ async def main():
                         help="Seconds to wait for one game before giving up")
     args = parser.parse_args()
 
-    player = PPOPlayer(
-        model_path=args.model,
-        data_dir="data",
-        deterministic=True,
+    common = dict(
         battle_format="gen9randombattle",
         account_configuration=AccountConfiguration(f"FPEval{uuid.uuid4().hex[:6]}", None),
         server_configuration=ServerConfiguration(
@@ -64,6 +63,11 @@ async def main():
         ),
         max_concurrent_battles=1,
     )
+    if args.model.endswith(".pt"):
+        # this local Showdown fork sends each request before the turn's log
+        player = V20Player(model_path=args.model, deterministic=True, hold_requests=True, **common)
+    else:
+        player = PPOPlayer(model_path=args.model, data_dir="data", deterministic=True, **common)
 
     print(f"Challenging {args.opponent} to {args.games} gen9randombattle games with {args.model}...")
     # Foul Play plays one battle at a time and ignores challenges that arrive mid-battle, while

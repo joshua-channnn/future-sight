@@ -48,7 +48,8 @@ v17-v19 (SB3):
   experiments and evals so you never collide with a running training job; `eval/ppo_test.py`
   defaults to 8004.
 - v20: `python3 -m training.ppo_v20 --workers 6 --servers 3 --stop-at 10000000` (resumes from
-  `_latest.pt` automatically). On the MacBook, `tools/run_v20_mac.sh` wraps it: it pauses the run
+  `_latest.pt` automatically; `--set KEY=VALUE` overrides any `CONFIG` entry, and a resumed run
+  must repeat the same `--set` flags or it refuses to start). On the MacBook, `tools/run_v20_mac.sh` wraps it: it pauses the run
   when the battery gets low and resumes on power. Each Showdown server is ~10 node processes and
   ~1.2 GB; don't leave unused ones running on the 16 GB Mac.
 - Evaluate a v20 model: `python3 -m eval.ppo_test --model models/X.pt --opponents simple --battles 1000 --port 8123`
@@ -74,4 +75,5 @@ v17-v19 (SB3):
 - architecture changes or deciding what to do next: `agent_docs/roadmap.md`
 - v20 (design, checks, throughput, results): `agent_docs/v20.md`; the step 3 brief it was built
   from: `agent_docs/step3_handoff.md`
-- what to do next (hyperparameter A/Bs, longer runs, step 4): `agent_docs/step4_handoff.md`
+- what to do next, starting with the v20 learning-rate run (commands, how to judge it), then
+  hyperparameter A/Bs and step 4: `agent_docs/step4_handoff.md`

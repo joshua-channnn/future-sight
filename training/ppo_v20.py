@@ -90,12 +90,21 @@ CONFIG = {
     "n_eval_episodes": 500,
     "save_freq": 200_000,
 
+    "allow_config_change": False,    # resume even if the settings below differ from the checkpoint's
     "net_config": None,              # networks.v20_policy.DEFAULT_CONFIG when None
     "model_dir": "models",
     "log_dir": "logs",
     "data_dir": "data",
     "seed": None,
 }
+
+
+# Settings a resumed run must share with its checkpoint (pass the same --set flags when resuming)
+RESUME_CHECK_KEYS = (
+    "total_timesteps", "lr_initial", "lr_final", "lr_decay_exponent", "embed_lr_mult", "adam_eps",
+    "gamma", "gae_lambda", "clip_range", "clip_range_vf", "n_epochs", "batch_size",
+    "steps_per_update", "max_grad_norm", "ent_coef", "vf_coef", "zero_avoid_coef", "opponents",
+    "heuristic_ratio", "latest_opponent_ratio", "pool_save_freq", "max_pool_size", "net_config")
 
 
 def server_config(port):
@@ -519,14 +528,20 @@ class Trainer:
         if not os.path.exists(self.p["latest"]):
             return False
         ckpt = torch.load(self.p["latest"], map_location="cpu", weights_only=False)
+        saved = ckpt.get("config", {})
+        changed = {k: (saved.get(k), self.cfg.get(k)) for k in RESUME_CHECK_KEYS
+                   if k in saved and saved.get(k) != self.cfg.get(k)}
+        if changed:
+            lines = "\n".join(f"    {k}: checkpoint {a!r}, now {b!r}" for k, (a, b) in changed.items())
+            if not self.cfg.get("allow_config_change"):
+                raise SystemExit(f"{self.p['latest']} was trained with different settings:\n{lines}\n"
+                                 "Pass the same --set flags as the original run, or add "
+                                 "--set allow_config_change=True to resume with the new ones.")
+            print(f"  WARNING: resuming with changed settings:\n{lines}", flush=True)
         self.model.load_state_dict(ckpt["model"])
         self.optimizer.load_state_dict(ckpt["optimizer"])  # moves its state to the params' device
         self.step, self.games, self.update_n = ckpt["step"], ckpt["games"], ckpt["update"]
         self.eval_state = ckpt.get("eval_state", self.eval_state)
-        saved = ckpt.get("config", {})
-        if saved.get("total_timesteps") != self.cfg["total_timesteps"]:
-            print(f"  WARNING: LR horizon changed from {saved.get('total_timesteps')} to "
-                  f"{self.cfg['total_timesteps']}", flush=True)
         print(f"Resumed {self.cfg['version']} at {self.step:,} steps, {self.games:,} games, "
               f"update {self.update_n}", flush=True)
         return True
@@ -672,7 +687,8 @@ class Trainer:
               f"eval port {cfg['eval_port']}")
         print(f"  opponents: {cfg['opponents']} | steps/update {cfg['steps_per_update']:,} | "
               f"LR horizon {cfg['total_timesteps']:,} | stop at {stop_at:,}")
-        print(f"  update device: {self.device}")
+        print(f"  update device: {self.device} | lr {cfg['lr_initial']:.3e} (embeddings x{cfg['embed_lr_mult']:g}), "
+              f"decay (8x+1)^-{cfg['lr_decay_exponent']:g}")
         print(f"  PPO: gamma {cfg['gamma']} lambda {cfg['gae_lambda']} clip {cfg['clip_range']} "
               f"vf-clip {cfg['clip_range_vf']} epochs {cfg['n_epochs']} batch {cfg['batch_size']} "
               f"ent {cfg['ent_coef']} vf {cfg['vf_coef']} zero-avoid {cfg['zero_avoid_coef']}")
@@ -812,6 +828,9 @@ def main():
     ap.add_argument("--update-threads", type=int, default=None)
     ap.add_argument("--update-device", default=None, help="auto (default), cpu, mps or cuda")
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="override any CONFIG entry (repeatable), e.g. --set lr_initial=1.766e-4 "
+                         "--set clip_range_vf=None; a resumed run needs the same flags")
     args = ap.parse_args()
     cfg = dict(CONFIG)
     for arg, key in (("version", "version"), ("timesteps", "total_timesteps"), ("stop_at", "stop_at"),
@@ -824,6 +843,17 @@ def main():
         v = getattr(args, arg)
         if v is not None:
             cfg[key] = v
+    import ast
+    for item in args.set:
+        key, sep, raw = item.partition("=")
+        if not sep or key not in CONFIG:
+            raise SystemExit(f"--set {item!r}: expected KEY=VALUE with KEY one of CONFIG's keys")
+        try:
+            value = ast.literal_eval(raw)
+        except (ValueError, SyntaxError):
+            value = raw  # a plain string
+        cfg[key] = value
+        print(f"  --set {key} = {value!r}", flush=True)
     Trainer(cfg).train()
 
 

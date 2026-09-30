@@ -49,7 +49,8 @@ This page is about the SB3 trainer (v17-v19). For v20 (`training/ppo_v20.py`) se
 - One stdout line per update (`update N | total_timesteps ... | fps ... | kl ... | win ...`), and
   `>>> Eval @ <step>: <rate> (<wins>/<games>)` when an eval finishes; evals run in their own
   process while training continues.
-- Settings: `CONFIG` in `training/ppo_v20.py`. The PPO values are v19's (Wang's bundle); v20 adds
+- Settings: `CONFIG` in `training/ppo_v20.py`; override any entry with `--set KEY=VALUE`
+  (repeatable; a resumed run needs the same flags). The PPO values are v19's (Wang's bundle); v20 adds
   `zero_avoid_coef` (0.005), `update_device` (the GPU when there is one) and the opponent mix
   (`heuristic_ratio`, `latest_opponent_ratio`, where "latest" is the live policy with both sides
   recorded).

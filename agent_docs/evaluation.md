@@ -26,6 +26,12 @@ isn't registered on the main Showdown server, then run the script. A game takes 
 at Foul Play's default search settings.
 - The script challenges one game at a time: `Player.send_challenges(n)` sends the next challenge
   while a battle is still running, and Foul Play ignores it, which deadlocks.
+- `--model` takes a v20 `.pt` (the default is `models/ppo_pokemon_6v6_v20.pt`; it plays with
+  `hold_requests=True`, see gotcha 9) or an SB3 zip.
+- If `docker` commands return "500 Internal Server Error" and Docker's host log
+  (`~/Library/Containers/com.docker.docker/Data/log/host/com.docker.backend.log`) shows "no route
+  to host" to 192.168.65.7, Docker Desktop's VM didn't come up: quit Docker Desktop
+  (`osascript -e 'quit app "Docker Desktop"'`) and open it again.
 - Foul Play targets current Showdown. Against this Feb 2026 fork it needs the local patches in
   `../foul-play`: request/log reordering in `fp/websocket_client.py` and the Snow -> Snowscape
   rename in `fp/battle/protocol.py`. If it crashes on another mismatch, running it against an
@@ -34,4 +40,7 @@ at Foul Play's default search settings.
 ## Reference points
 - v18.3_best (true wins): see the README's Performance table. Against Foul Play it won 2 of 10,
   too few games to say more than that Foul Play is much stronger.
+- v20 (10M, `models/ppo_pokemon_6v6_v20.pt`) vs Foul Play at its default search settings (100 ms
+  per sampled state): 27 of 200 = 13.5% ± 4.7% (September 30, 2026; 8 of the first 100, 19 of the
+  second). Foul Play is still far stronger, roughly 320 Elo at these settings.
 - Public ladder: Jaxcalibur peaked at 2557 Elo (#1, Aug 2026); Foul Play peaked at 2341 Elo / 88% GXE.

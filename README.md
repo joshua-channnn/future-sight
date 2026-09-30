@@ -12,6 +12,7 @@ A reinforcement learning bot for Gen 9 Random Battles on [Pokemon Showdown](http
 | SimpleHeuristics | 1,000 | 83.7% ± 2.3% |
 | v18.3 (previous best, ~210M steps) | 2,000 (both seats) | 70.1% ± 2.0% |
 | v19 (v18 architecture, 10M steps) | 2,000 (both seats) | 79.3% ± 1.8% |
+| Foul Play (MCTS bot, local, default search) | 200 | 13.5% ± 4.7% |
 
 The previous best, `models/ppo_pokemon_6v6_v18.3_best.zip`, wins 94.7% ± 1.4% vs RandomPlayer,
 67.9% ± 2.9% vs SimpleHeuristics and 60.4% ± 3.0% vs v17.3sp (1,000 games each). Earlier versions
