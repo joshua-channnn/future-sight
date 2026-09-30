@@ -1,6 +1,12 @@
 # Roadmap (from the September 2026 review)
 
 ## Where things stand
+- **Step 3 is done: v20 is the best model** (`models/ppo_pokemon_6v6_v20.pt`; details in
+  `v20.md`). Trained from scratch to 10M steps on the MacBook with v19's PPO settings, it wins
+  83.7% ± 2.3% of 1,000 games vs SimpleHeuristics, 79.3% ± 1.8% vs v19 and 70.1% ± 2.0% vs v18.3
+  (2,000 games each, both seats). Its in-training evals: 54.0% at 1M (v19: 13.4%), 68.0% at 2M
+  (34.0%), 80.6% at 5M (51.0%), 83.4% at 10M (63.0%), flattening from about 7M as the learning
+  rate decays.
 - v19 = the v18 architecture plus bug fixes (see `poke_env_gotchas.md`), sparse reward and Wang's
   full PPO recipe. Trained from scratch to 10M steps on a GCP VM (20 envs) and stopped there on
   purpose. In-training evals vs SimpleHeuristics (500 games each): 13.4% at 1M, 34.0% at 2M,
@@ -72,12 +78,17 @@
    block.
 2. Done: v19 trained from scratch to 10M steps as the clean baseline (results above). Compare step 3
    against its eval curve at equal steps, with the same 20M learning-rate schedule.
-3. (Design and handoff: `step3_handoff.md`.) Replace SB3 with a small CleanRL-style PPO loop
+3. Done (September 2026; `v20.md`, brief in `step3_handoff.md`). Replace SB3 with a small CleanRL-style PPO loop
    (~300 lines), trained from scratch, with:
    per-token action heads (each bench Pokémon scores its own switch; one shared scorer gives each
    move a move logit and a tera+move logit), a shared trunk, two-sided self-play (record both
    players when both run the current policy, as Wang did), legality-only masks plus Jaxcalibur's
    zero-avoiding term, and the missing inputs.
+   Next for v20, before or alongside step 4: the like-for-like run kept v19's hyperparameters,
+   and approx_kl stayed at 0.0004-0.0018 (target ~0.01), so A/B a higher learning rate first,
+   then `clip_range_vf` (0.0184 vs None), `gae_lambda` (0.754 vs 0.9-0.95) and
+   `zero_avoid_coef`; and train on past 10M (the curve was still inching up). The v20 tokens
+   are the input step 4's attention trunk needs.
 4. Entity-token transformer (3-4 layers, d=128-192) over the field, 6+6 Pokémon, 4 moves and the
    last 8-16 events from `battle.observations`. Auxiliary heads for the opponent's next action and
    its hidden item, ability, moves and tera type; in self-play the labels are free from `battle2`.

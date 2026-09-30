@@ -1,22 +1,26 @@
 # Future Sight — RL Agent for Pokemon Showdown
 
-A reinforcement learning bot for Gen 9 Random Battles on [Pokemon Showdown](https://pokemonshowdown.com/), trained with PPO and self-play over 100 million timesteps.
+A reinforcement learning bot for Gen 9 Random Battles on [Pokemon Showdown](https://pokemonshowdown.com/), trained with PPO and self-play.
 
 ## Performance
 
-`models/ppo_pokemon_6v6_v18.3_best` on the current environment, 1,000 games per opponent, counting actual wins (`battle.won`):
+`models/ppo_pokemon_6v6_v20.pt` (v20, 10M steps from scratch), counting actual wins (`battle.won`):
 
-| Opponent | Win Rate (95% CI) |
-|----------|-------------------|
-| RandomPlayer | 94.7% ± 1.4% |
-| SimpleHeuristics | 67.9% ± 2.9% |
-| v17.3sp (prior self-play agent) | 60.4% ± 3.0% |
+| Opponent | Games | Win Rate (95% CI) |
+|----------|-------|-------------------|
+| RandomPlayer | 1,000 | 99.8% ± 0.3% |
+| SimpleHeuristics | 1,000 | 83.7% ± 2.3% |
+| v18.3 (previous best, ~210M steps) | 2,000 (both seats) | 70.1% ± 2.0% |
+| v19 (v18 architecture, 10M steps) | 2,000 (both seats) | 79.3% ± 1.8% |
 
-Earlier versions of this table counted episodes with positive reward as wins, which overstated results (e.g. 73.2% vs SimpleHeuristics).
+The previous best, `models/ppo_pokemon_6v6_v18.3_best.zip`, wins 94.7% ± 1.4% vs RandomPlayer,
+67.9% ± 2.9% vs SimpleHeuristics and 60.4% ± 3.0% vs v17.3sp (1,000 games each). Earlier versions
+of this table counted episodes with positive reward as wins, which overstated results (e.g. 73.2%
+vs SimpleHeuristics).
 
 ## How It Works
 
-The bot uses a PPO policy network with learned embeddings for Pokemon, moves, abilities, and items. It reads the battle state each turn, encodes it into a feature vector, and picks the highest-value action from 13 options (4 moves, 4 moves with Terastallize, 5 switches). Action masking enforces legal moves and blocks obviously bad ones like Electric moves into Ground types.
+v20 reads the battle each turn as tokens: one per Pokemon on each side (the opponent's unrevealed ones as placeholders), one per available move, and one for the field. Learned embeddings for species, moves, abilities, items and types feed per-token encoders and a shared trunk. Each move token scores "use" and "Terastallize and use", each of our Pokemon scores "switch to me", and a value head scores the position: 14 actions in all, masked to the legal ones. It is trained with its own PPO loop (worker processes, self-play against itself and a pool of past models) instead of Stable-Baselines3. v17-v19 used a flat feature vector, 13 actions and SB3 `MaskablePPO`; their code is kept so those models still load. Details: `agent_docs/v20.md`.
 
 ## Setup
 
@@ -70,13 +74,20 @@ Edit `players/ladder_bot.py` to set your username, password, and number of games
 ### Evaluate against bots
 
 ```bash
-python -m eval.ppo_test                                                              # vs Random + SimpleHeuristics
-python -m eval.ppo_test --opponents model --opp-model models/ppo_pokemon_6v6_v17.3sp # head-to-head
+python -m eval.ppo_test --model models/ppo_pokemon_6v6_v20.pt                          # vs Random + SimpleHeuristics
+python -m eval.ppo_test --model models/ppo_pokemon_6v6_v20.pt --opponents model \
+    --opp-model models/ppo_pokemon_6v6_v18.3_best.zip --seat both                     # head-to-head, both seats
 ```
 
 ### Train
 
-Needs local Showdown servers on ports 8000-8004 (4 training envs + 1 eval env).
+v20 (needs Showdown servers on ports 8000-8003: 3 for the workers, 1 for evals):
+
+```bash
+python -m training.ppo_v20 --workers 6 --servers 3 --stop-at 10000000   # resumes automatically
+```
+
+The SB3 trainer for v17-v19 needs servers on ports 8000-8004 (4 training envs + 1 eval env):
 
 ```bash
 python -m training.ppo_embed_train_selfplay                      # from scratch
@@ -92,23 +103,29 @@ See the instructions at the top of `eval/foulplay_eval.py`.
 
 ```
 ├── players/                          # Player wrappers + deployment bots
-│   ├── ppo_player.py                 #   PPO inference player (auto-detects model version)
+│   ├── v20_player.py                 #   v20 policy / player, and loading of any model as an opponent
+│   ├── ppo_player.py                 #   SB3 inference player (auto-detects v17-v19 models)
 │   ├── play_bot.py                   #   Play against the bot locally
 │   └── ladder_bot.py                 #   Run on the Showdown ladder
-├── envs/                             # RL environments + gym wrappers
+├── envs/                             # RL environments
+│   ├── rl_player_v20.py              #   v20 tokens, 14-action mapping, two-agent env
+│   ├── rl_player_6v6_v18.py          #   v18/v19 observation space (677-dim)
 │   ├── rl_player_6v6.py              #   v17 observation space (640-dim), for loading v17 models
-│   ├── rl_player_6v6_v18.py          #   v18 observation space (677-dim)
-│   └── wrappers.py                   #   Maskable action wrapper
-├── networks/                         # Neural network feature extractors
-│   ├── embedding_extractor.py        #   v17 feature extractor
-│   ├── embedding_extractor_sp.py     #   v17 self-play variant (max+mean pool)
-│   └── embedding_extractor_v18.py    #   v18 feature extractor
+│   └── wrappers.py                   #   Maskable action wrapper (SB3)
+├── networks/
+│   ├── v20_policy.py                 #   v20 network (per-token heads, shared trunk)
+│   └── embedding_extractor*.py       #   v17-v19 feature extractors
 ├── training/
-│   └── ppo_embed_train_selfplay.py   #   Self-play + SimpleHeuristics training
-├── eval/                             # Evaluation
+│   ├── ppo_v20.py                    #   v20 PPO loop (workers, two-sided self-play, pool, evals)
+│   └── ppo_embed_train_selfplay.py   #   SB3 self-play training (v17-v19)
+├── eval/
 │   ├── ppo_test.py                   #   Evaluate models vs Random / SimpleHeuristics / other models
+│   ├── v20_eval.py                   #   Evaluation games for v20 models
 │   └── foulplay_eval.py              #   Evaluate against Foul Play (MCTS bot) running in Docker
-├── data/                             # Embedding vocabularies + config
+├── tools/                            # Checks against live battles, benchmarks, Mac runner
+├── cloud/                            # Google Cloud training scripts
+├── agent_docs/                       # Notes for agents working on the project
+├── data/                             # Embedding vocabularies, random-battle sets
 └── models/                           # Trained model checkpoints
 ```
 

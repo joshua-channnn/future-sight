@@ -411,37 +411,44 @@ def update_device(cfg):
 
 
 def ppo_update(model, optimizer, data, cfg, device):
-    # int16 indices and float16 features stay compact on the device; each minibatch is widened
-    idx = torch.as_tensor(data["idx"]).to(device)
-    flt = torch.as_tensor(data["flt"]).to(device)
-    mask = torch.as_tensor(data["mask"]).to(device)
-    act = torch.as_tensor(data["act"]).to(device)
-    old_logp = torch.as_tensor(data["logp"]).to(device)
-    old_val = torch.as_tensor(data["val"]).to(device)
-    advs = torch.as_tensor(data["adv"]).to(device)
-    rets = torch.as_tensor(data["ret"]).to(device)
+    """SB3-style PPO epochs over the rollout. Minibatches are gathered on the CPU and all have
+    batch_size samples (each epoch drops a random remainder of under batch_size): the MPS backend
+    caches a compiled graph per input shape, about 57 MB each, and a partial last minibatch of a
+    new size every update grew the learner by that much per update (7.6 GB after 150 updates).
+    SB3's v19 rollouts were exactly 40 x 1024, so it never had partial minibatches either."""
+    idx = torch.as_tensor(data["idx"])      # int16
+    flt = torch.as_tensor(data["flt"])      # float16
+    mask = torch.as_tensor(data["mask"])
+    act = torch.as_tensor(data["act"])
+    old_logp = torch.as_tensor(data["logp"])
+    old_val = torch.as_tensor(data["val"])
+    advs = torch.as_tensor(data["adv"])
+    rets = torch.as_tensor(data["ret"])
     N = len(act)
-    bs = cfg["batch_size"]
+    bs = min(cfg["batch_size"], N)
+    n_mb = N // bs
     clip, clip_vf = cfg["clip_range"], cfg["clip_range_vf"]
     logs = defaultdict(list)  # device tensors, read once at the end (no per-step syncs)
     model.train()
     for _ in range(cfg["n_epochs"]):
-        perm = torch.randperm(N).to(device)
-        for start in range(0, N, bs):
-            mb = perm[start:start + bs]
-            logp, ent, val, kl_u = model.evaluate_actions(idx[mb].long(), flt[mb].float(), mask[mb], act[mb])
-            adv = advs[mb]
-            if len(mb) > 1:
+        perm = torch.randperm(N)
+        for k in range(n_mb):
+            mb = perm[k * bs:(k + 1) * bs]
+            logp, ent, val, kl_u = model.evaluate_actions(
+                idx[mb].to(device).long(), flt[mb].to(device).float(), mask[mb].to(device),
+                act[mb].to(device))
+            adv = advs[mb].to(device)
+            if bs > 1:
                 adv = (adv - adv.mean()) / (adv.std() + 1e-8)
-            log_ratio = logp - old_logp[mb]
+            log_ratio = logp - old_logp[mb].to(device)
             ratio = torch.exp(log_ratio)
             pg = -torch.min(adv * ratio, adv * torch.clamp(ratio, 1 - clip, 1 + clip)).mean()
             if clip_vf is not None:
-                ov = old_val[mb]
+                ov = old_val[mb].to(device)
                 val_pred = ov + torch.clamp(val - ov, -clip_vf, clip_vf)
             else:
                 val_pred = val
-            v_loss = F.mse_loss(rets[mb], val_pred)
+            v_loss = F.mse_loss(rets[mb].to(device), val_pred)
             ent_loss = -ent.mean()
             za = kl_u.mean()
             loss = pg + cfg["ent_coef"] * ent_loss + cfg["vf_coef"] * v_loss + cfg["zero_avoid_coef"] * za
@@ -460,7 +467,7 @@ def ppo_update(model, optimizer, data, cfg, device):
     model.eval()
     out = {k: float(torch.stack(v).mean()) for k, v in logs.items()}
     out["explained_variance"] = explained_variance(data["val"], data["ret"])
-    del idx, flt, mask, act, old_logp, old_val, advs, rets, logs
+    del logs
     if device.type == "mps":
         torch.mps.empty_cache()
     elif device.type == "cuda":

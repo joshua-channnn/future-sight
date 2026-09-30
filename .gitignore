@@ -1,5 +1,6 @@
 models/*
 !models/ppo_pokemon_6v6_v18.3_best.zip
+!models/ppo_pokemon_6v6_v20.pt
 logs/
 __pycache__/
 *.pyc

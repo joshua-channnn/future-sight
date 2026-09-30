@@ -1,5 +1,9 @@
 # Step 3 handoff: custom PPO loop with per-token action heads (v20)
 
+> **Status (September 30, 2026): done.** v20 was built as recommended here and trained to 10M
+> steps on the Mac; it wins 83.7% vs SimpleHeuristics, 79.3% vs v19 and 70.1% vs v18.3. Design,
+> checks and results: `v20.md`. What to do next: `step4_handoff.md`. This file is kept as the brief.
+
 For the agent that builds step 3 of `roadmap.md`. Written September 28, 2026, at the end of the
 session that reviewed the architecture, fixed the v19 bugs, trained v19 on Google Cloud and
 measured it. Everything here was measured or checked in that session unless it says otherwise.
