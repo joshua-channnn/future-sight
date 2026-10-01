@@ -1,10 +1,10 @@
 # Handoff after step 3 (v20): hyperparameter A/Bs, then step 4
 
 For the agent that picks this up in a new chat. Written September 30, 2026, at the end of the
-session that built, trained and evaluated v20, and updated that night after the **3x
-learning-rate run** (section 2: no gain; the LR isn't what limits v20). Which run comes next is
-the user's call; the recommendation is the `clip_range_vf` A/B (section 5). Everything here was
-measured on September 29-30 unless it says otherwise.
+session that built, trained and evaluated v20, and updated after two A/Bs (section 2): the **3x
+learning rate** (no gain) and **no value clip** (a faster start, level with v20 by 5M). Which run
+comes next is the user's call; the recommendation is a lower `ent_coef` (section 5). Everything
+here was measured on September 29-October 1 unless it says otherwise.
 
 ## 0. Start here
 1. Read this file, then `CLAUDE.md`. Skim `v20.md` (design, checks, results, the LR run) and
@@ -37,34 +37,45 @@ measured on September 29-30 unless it says otherwise.
   | v19 | 13.4 | 34.0 | 43.2 | 48.6 | 51.0 | 57.0 | 61.8 | 59.6 | 60.4 | 63.0 |
   | v20 | 54.0 | 68.0 | 73.0 | 75.2 | 80.6 | 81.2 | 83.0 | 81.8 | 84.4 | 83.4 |
   | v20lr3 | 37.2 | 59.8 | 63.8 | 74.8 | 75.0 | 76.4 | 80.6 | 80.8 | 83.0 | 80.8 |
+  | v20vf | 65.8 | 71.4 | 78.2 | 76.8 | 79.2 | | | | | |
 
 - **Run artifacts** (gitignored). v20: `models/ppo_pokemon_6v6_v20_latest.pt` (resumable at
   10.03M steps, with the optimizer), `models/eval_snapshots_v20/step_*.pt` (1M..10M, for
   head-to-heads at equal steps), `models/selfplay_pool_v20/`, `logs/train_v20.log`, `logs/v20/`
   (TensorBoard), `logs/final_checks_step_0010034773/`, `logs/greedy_h2h/`, `logs/foulplay/`.
   v20lr3: the same names with `v20lr3` (resumable at 10.04M), `logs/lr3_checks_5M/`,
-  `logs/final_checks_step_0010041096/`.
+  `logs/final_checks_step_0010041096/`. v20vf: the same names with `v20vf` (resumable at 5.02M),
+  `logs/vf_checks/`.
 - Nothing is running: no Showdown servers, no training. Docker Desktop is up (only needed for Foul
   Play).
 
-## 2. The learning-rate run (done) and how to run the next A/B
-- **Result:** `lr_initial` x3 (1.766e-4, version `v20lr3`, from scratch to 10M, every other
+## 2. The A/Bs so far, and how to run the next one
+- **Learning rate x3:** `lr_initial` 1.766e-4 (version `v20lr3`, from scratch to 10M, every other
   setting v20's) gave no gain. It was well behind early (37% vs 54% at 1M), level at 5M (77.8% vs
   77.4% vs SimpleHeuristics over 1,000 games; 47.3% ± 2.2% in a greedy head-to-head) and level at
   10M (49.4% ± 2.2% head-to-head; 80.4% vs 83.7% vs SimpleHeuristics). The clip range (0.0829)
   caps how far an update moves the policy, so v20's low approx_kl never meant the LR was too low;
   x3 pushed the clip fraction to 0.3-0.4 and learned slower. Late in the run its updates were ~4x
   v20's, and it still gained no ground. Details and diagnostics: `v20.md`, "Learning rate x3".
+- **No value clip:** `clip_range_vf=None` (version `v20vf`, to 5M) learned faster early
+  (head-to-heads vs v20 at equal steps: 58.6% at 1M, 55.5% at 2M) and was level by 5M (51.6% ±
+  2.2%; 79.0% vs 77.4% vs SimpleHeuristics). Explained variance rose sooner but leveled off at the
+  same 0.81. It never did worse, so use it in the next long run (`--set clip_range_vf=None`;
+  changing the `CONFIG` default would make resuming v20 and v20lr3 need
+  `--set clip_range_vf=0.0184`). Keep the A/Bs to one change vs v20, so they compare with v20's
+  full curve and snapshots. Details: `v20.md`, "Value clip off".
+- Both settings changed how fast v20 learns, not the level it reaches (~83-84% vs
+  SimpleHeuristics by 7-10M).
 - **An A/B run:** v20 from scratch with one `--set` change and its own version name, to 5M first
-  (~1 h 45 min on power at 750-1,000 samples/s), continued to 10M if it's ahead (section 4). From
-  `pokemon-rl/`, e.g. for the `clip_range_vf` A/B:
+  (1 h 45 min to 2 h 10 min on power at 650-1,000 samples/s), continued to 10M if it's ahead
+  (section 4). From `pokemon-rl/`, e.g. for the `ent_coef` A/B:
   ```
   cd ../pokemon-showdown && for p in 8000 8001 8002 8003; do (nohup node pokemon-showdown start --no-security --port $p > /tmp/showdown_$p.log 2>&1 &); sleep 2; done; cd ../pokemon-rl
-  LOG=logs/train_v20vf.log nohup bash tools/run_v20_mac.sh --version v20vf --workers 6 --servers 3 \
-      --base-port 8000 --eval-port 8003 --stop-at 5000000 --set clip_range_vf=None > /dev/null 2>&1 &
+  LOG=logs/train_v20ent.log nohup bash tools/run_v20_mac.sh --version v20ent --workers 6 --servers 3 \
+      --base-port 8000 --eval-port 8003 --stop-at 5000000 --set ent_coef=0.02 > /dev/null 2>&1 &
   ```
   Start the servers one at a time (each `start` rebuilds). The log's first lines should show the
-  `--set` line and the new value in the `PPO:` line (here `vf-clip None`).
+  `--set` line and the new value in the `PPO:` line (here `ent 0.02`).
 - **Continuing or resuming:** the same command with a higher `--stop-at` resumes from
   `models/ppo_pokemon_6v6_<version>_latest.pt`. Repeat the `--set` flags: the trainer refuses to
   resume a checkpoint with different settings (tested). `--set KEY=VALUE` overrides any `CONFIG`
@@ -112,16 +123,16 @@ measured on September 29-30 unless it says otherwise.
   - **About the same or worse:** keep v20's value and move to the next A/B.
 
 ## 5. What next
-1. A/Bs, one change per run, compared at equal steps (section 4), in order of promise:
-   - `clip_range_vf=None` (vs 0.0184): explained variance sat at 0.81 from 1M on in v20 and
-     v20lr3 alike, so the value fit isn't LR-limited; SB3's value clip lets each prediction move
-     only ±0.0184 per update.
+1. A/Bs, one change per run vs v20, compared at equal steps (section 4). The two so far only
+   changed how fast v20 learns (section 2), so try the settings that change what it converges to:
+   - `ent_coef` lower (vs 0.0588, e.g. 0.02): entropy is still 1.04 at 10M, and the sampled
+     policy, which plays every training game, is far weaker than the greedy one that's evaluated
+     (v20@5M greedy beats itself sampling 67.7%).
    - `gae_lambda` 0.9-0.95 (vs 0.754): with ±1 only at the end of a ~30-decision game, λ = 0.754
-     leans hard on the value function for credit assignment.
-   - `ent_coef` lower (vs 0.0588, e.g. 0.02): the sampled policy, which plays all training games,
-     is far weaker than the greedy one (67.7% greedy vs itself sampling at 5M).
+     leans hard on the value function, whose explained variance stops at 0.81 whatever the LR or
+     the value clip.
    - `zero_avoid_coef` (0.005 vs 0 and 0.02), `embed_lr_mult` (10 vs 1).
-   - Not the LR: x3 gave nothing, and x2 or an LR floor would test the same thing.
+   - Done: the LR (x3; x2 or an LR floor would test the same thing) and the value clip.
 2. Train the winner longer (20M or more), or extend v20 itself (`--version v20 --stop-at 20000000`,
    no `--set`); its curve was nearly flat from 7M.
 3. **Step 4** (`roadmap.md`): an attention trunk over the v20 tokens (12 Pokémon + 4 moves + field
