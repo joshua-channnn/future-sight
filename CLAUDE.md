@@ -53,7 +53,8 @@ v17-v19 (SB3):
   when the battery gets low and resumes on power. Each Showdown server is ~10 node processes and
   ~1.2 GB; don't leave unused ones running on the 16 GB Mac.
 - Evaluate a v20 model: `python3 -m eval.ppo_test --model models/X.pt --opponents simple --battles 1000 --port 8123`
-  (`--seat both` for head-to-heads in both seats).
+  (head-to-heads: `--opponents model --opp-model models/Y --opp-deterministic --seat both`;
+  without `--opp-deterministic` the opponent samples its actions, which inflates our win rate).
 - There is no test suite. To check a change: `python3 -m py_compile` the touched files, then run a
   short eval, `python3 -m eval.ppo_test --opponents simple --battles 400 --port 8123`. For v20 env
   or trainer changes also run `python3 -m tools.check_v20_env --games 50 --port 8123` (features
@@ -75,5 +76,5 @@ v17-v19 (SB3):
 - architecture changes or deciding what to do next: `agent_docs/roadmap.md`
 - v20 (design, checks, throughput, results): `agent_docs/v20.md`; the step 3 brief it was built
   from: `agent_docs/step3_handoff.md`
-- what to do next, starting with the v20 learning-rate run (commands, how to judge it), then
-  hyperparameter A/Bs and step 4: `agent_docs/step4_handoff.md`
+- what to do next (the LR run's result, hyperparameter A/Bs with commands and how to judge them,
+  then step 4): `agent_docs/step4_handoff.md`

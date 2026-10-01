@@ -26,8 +26,12 @@ This page is about the SB3 trainer (v17-v19). For v20 (`training/ppo_v20.py`) se
   every reload stalls all envs.
 
 ## What to watch (TensorBoard, `logs/`)
-- `train/approx_kl`: aim for about 0.01. v18.x sat at about 0.0017, which means the policy
-  barely moved. If it stays far below 0.01, raise `base_lr_initial`.
+- `train/approx_kl` and `train/clip_fraction`: the usual "aim for about 0.01" assumes a clip
+  range near 0.2. With Wang's 0.0829 the clip binds first: v18.x and v20 sat at about 0.0017
+  early, and tripling the LR (v20lr3, `v20.md`) only took kl to 0.005-0.006 over the first 3M
+  while the clip fraction rose to 0.3-0.4 and learning slowed (37% vs 54% at 1M); it ended
+  level with v20 at 10M. A low kl alone is no reason to raise the LR. v20's clip fraction:
+  0.10-0.14 early, 0.03 by 10M.
 - `eval/win_rate`: true wins over 500 games vs SimpleHeuristics, every `eval_freq` steps.
 - `train/win_rate`: true wins against the training opponent mix.
 - Throughput with 4 envs on the MacBook Air: collection ran at about 450 steps/s in a one-update

@@ -10,14 +10,15 @@ A reinforcement learning bot for Gen 9 Random Battles on [Pokemon Showdown](http
 |----------|-------|-------------------|
 | RandomPlayer | 1,000 | 99.8% ± 0.3% |
 | SimpleHeuristics | 1,000 | 83.7% ± 2.3% |
-| v18.3 (previous best, ~210M steps) | 2,000 (both seats) | 70.1% ± 2.0% |
-| v19 (v18 architecture, 10M steps) | 2,000 (both seats) | 79.3% ± 1.8% |
+| v18.3 (previous best, ~210M steps) | 2,000 (both seats, both greedy) | 62.8% ± 2.1% |
+| v19 (v18 architecture, 10M steps) | 2,000 (both seats, both greedy) | 73.9% ± 1.9% |
 | Foul Play (MCTS bot, local, default search) | 200 | 13.5% ± 4.7% |
 
 The previous best, `models/ppo_pokemon_6v6_v18.3_best.zip`, wins 94.7% ± 1.4% vs RandomPlayer,
 67.9% ± 2.9% vs SimpleHeuristics and 60.4% ± 3.0% vs v17.3sp (1,000 games each). Earlier versions
 of this table counted episodes with positive reward as wins, which overstated results (e.g. 73.2%
-vs SimpleHeuristics).
+vs SimpleHeuristics), and reported v20's head-to-heads with the opponent sampling its actions
+(79.3% vs v19, 70.1% vs v18.3); both models play greedily now, as the deployed bots do.
 
 ## How It Works
 
@@ -77,7 +78,7 @@ Edit `players/ladder_bot.py` to set your username, password, and number of games
 ```bash
 python -m eval.ppo_test --model models/ppo_pokemon_6v6_v20.pt                          # vs Random + SimpleHeuristics
 python -m eval.ppo_test --model models/ppo_pokemon_6v6_v20.pt --opponents model \
-    --opp-model models/ppo_pokemon_6v6_v18.3_best.zip --seat both                     # head-to-head, both seats
+    --opp-model models/ppo_pokemon_6v6_v18.3_best.zip --opp-deterministic --seat both # head-to-head, both seats
 ```
 
 ### Train

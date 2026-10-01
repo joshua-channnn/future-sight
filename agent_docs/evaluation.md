@@ -11,6 +11,15 @@
 - `.pt` files go through `eval/v20_eval.py` (the v20 env, deterministic v20 policy).
 - `--opponents model --opp-model` takes a v20 `.pt` or an SB3 zip; `--seat both` plays the given
   number of games in each seat (1: the challenger, p1; 2: the challenged side) and reports both.
+- **Pass `--opp-deterministic` for head-to-heads.** Without it the opponent model samples its
+  actions while `--model` plays greedily (`--seat both` swaps seats, not roles), and the greedy
+  side wins far more: v20@5M greedy vs the same model sampling 67.7% ± 2.0%; v20lr3@5M vs v20@5M
+  65.6% with v20 sampling but 47.3% ± 2.2% with both greedy (2,000 games each, September 30, 2026).
+  The deployed players (`ladder_bot.py`, `foulplay_eval.py`) are greedy, and the SB3 path of
+  `ppo_test.py` always made the opponent greedy, so greedy vs greedy is the comparable number.
+  The v20 head-to-heads first reported (79.3% vs v19, 70.1% vs v18.3) were greedy vs sampling;
+  with both greedy they are 73.9% ± 1.9% and 62.8% ± 2.1%. `tools/final_checks_v20.sh` now passes
+  the flag.
 - An SB3 model can also be evaluated against a v20 opponent (`--opp-model models/Y.pt`).
 - Every eval env handles requests after the turn's log (`poke_env_gotchas.md` item 9).
 
