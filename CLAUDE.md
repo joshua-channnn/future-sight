@@ -33,7 +33,7 @@ v17-v19 (SB3):
 - `cloud/`: scripts for training on a Google Cloud VM (pack, set up, run with a stall guard, fetch).
 - Outside this repo: `../pokemon-showdown` (local Showdown server, a Feb 2026 fork) and
   `../foul-play` (Foul Play, locally patched, run via Docker).
-- `models/` is gitignored except `ppo_pokemon_6v6_v20.pt` (the best model: v20 at 10M steps) and
+- `models/` is gitignored except `ppo_pokemon_6v6_v20.pt` (the best model: v20 at 20M steps) and
   `ppo_pokemon_6v6_v18.3_best.zip` (the best SB3 model). v20 checkpoints are torch files:
   `models/ppo_pokemon_6v6_<version>_{latest,best}.pt`, pool `models/selfplay_pool_<version>/`,
   eval snapshots `models/eval_snapshots_<version>/`.

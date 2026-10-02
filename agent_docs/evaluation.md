@@ -49,7 +49,9 @@ at Foul Play's default search settings.
 ## Reference points
 - v18.3_best (true wins): see the README's Performance table. Against Foul Play it won 2 of 10,
   too few games to say more than that Foul Play is much stronger.
-- v20 (10M, `models/ppo_pokemon_6v6_v20.pt`) vs Foul Play at its default search settings (100 ms
-  per sampled state): 27 of 200 = 13.5% ± 4.7% (September 30, 2026; 8 of the first 100, 19 of the
-  second). Foul Play is still far stronger, roughly 320 Elo at these settings.
+- v20 at 10M (`models/eval_snapshots_v20/step_0010034773.pt`; the best model then) vs Foul Play
+  at its default search settings (100 ms per sampled state): 27 of 200 = 13.5% ± 4.7% (September
+  30, 2026; 8 of the first 100, 19 of the second). Foul Play is still far stronger, roughly 320
+  Elo at these settings. The 20M model (now `models/ppo_pokemon_6v6_v20.pt`, 52.3% vs the 10M
+  one) hasn't played it; a gain that small wouldn't show in 200 games.
 - Public ladder: Jaxcalibur peaked at 2557 Elo (#1, Aug 2026); Foul Play peaked at 2341 Elo / 88% GXE.

@@ -2,11 +2,13 @@
 
 ## Where things stand
 - **Step 3 is done: v20 is the best model** (`models/ppo_pokemon_6v6_v20.pt`; details in
-  `v20.md`). Trained from scratch to 10M steps on the MacBook with v19's PPO settings, it wins
-  83.7% ± 2.3% of 1,000 games vs SimpleHeuristics, 79.3% ± 1.8% vs v19 and 70.1% ± 2.0% vs v18.3
-  (2,000 games each, both seats). Its in-training evals: 54.0% at 1M (v19: 13.4%), 68.0% at 2M
-  (34.0%), 80.6% at 5M (51.0%), 83.4% at 10M (63.0%), flattening from about 7M as the learning
-  rate decays.
+  `v20.md`). Trained from scratch on the MacBook with v19's PPO settings. At 10M steps it won
+  83.7% ± 2.3% of 1,000 games vs SimpleHeuristics, 73.9% ± 1.9% vs v19 and 62.8% ± 2.1% vs v18.3
+  (2,000 games each, both seats, both greedy); continued to 20M on its own schedule, it wins
+  83.9%, 75.4% and 67.2%, and 52.3% ± 2.2% against its 10M self. Its in-training evals: 54.0% at
+  1M (v19: 13.4%), 68.0% at 2M (34.0%), 80.6% at 5M (51.0%), 83.4% at 10M (63.0%), then 82-88%
+  to 20M (500-game evals can't show the slow late gain). A 3x learning rate and dropping the
+  value clip changed how fast it learns, not where it ends up (`v20.md`).
 - v19 = the v18 architecture plus bug fixes (see `poke_env_gotchas.md`), sparse reward and Wang's
   full PPO recipe. Trained from scratch to 10M steps on a GCP VM (20 envs) and stopped there on
   purpose. In-training evals vs SimpleHeuristics (500 games each): 13.4% at 1M, 34.0% at 2M,
