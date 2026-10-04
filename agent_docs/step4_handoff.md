@@ -1,11 +1,12 @@
 # Handoff after step 3 (v20): hyperparameter A/Bs, then step 4
 
 For the agent that picks this up in a new chat. Written September 30, 2026, at the end of the
-session that built, trained and evaluated v20, and updated after two A/Bs and an extension
+session that built, trained and evaluated v20, and updated after three A/Bs and an extension
 (section 2): the **3x learning rate** (no gain), **no value clip** (a faster start, level with v20
-by 5M) and **v20 extended to 20M** (still learning, slowly; the 20M model is the new best). The
-user agreed the next runs: a lower `ent_coef`, then `gae_lambda`, each to 10M (section 5).
-Everything here was measured on September 29-October 2 unless it says otherwise.
+by 5M), **v20 extended to 20M** (still learning, slowly; the 20M model is the new best) and a
+**lower entropy bonus** (sharper, not stronger). The user agreed the `gae_lambda` A/B next; it
+started October 4 (`logs/train_v20gl.log`, section 5). Everything here was measured on
+September 29-October 4 unless it says otherwise.
 
 ## 0. Start here
 1. Read this file, then `CLAUDE.md`. Skim `v20.md` (design, checks, results, the LR run) and
@@ -40,6 +41,7 @@ Everything here was measured on September 29-October 2 unless it says otherwise.
   | v20 | 54.0 | 68.0 | 73.0 | 75.2 | 80.6 | 81.2 | 83.0 | 81.8 | 84.4 | 83.4 |
   | v20lr3 | 37.2 | 59.8 | 63.8 | 74.8 | 75.0 | 76.4 | 80.6 | 80.8 | 83.0 | 80.8 |
   | v20vf | 65.8 | 71.4 | 78.2 | 76.8 | 79.2 | | | | | |
+  | v20ent | 56.0 | 68.2 | 76.0 | 73.6 | 78.4 | 80.2 | 82.2 | 82.0 | 80.4 | 80.4 |
 
   v20 from 11M to 20M: 84.6, 81.8, 81.6, 82.6, 83.8, 84.4, 88.0, 84.4, 83.8, 84.4.
 
@@ -52,7 +54,8 @@ Everything here was measured on September 29-October 2 unless it says otherwise.
   `logs/foulplay/`.
   v20lr3: the same names with `v20lr3` (resumable at 10.04M), `logs/lr3_checks_5M/`,
   `logs/final_checks_step_0010041096/`. v20vf: the same names with `v20vf` (resumable at 5.02M),
-  `logs/vf_checks/`.
+  `logs/vf_checks/`. v20ent: the same names with `v20ent` (resumable at 10.03M),
+  `logs/ent_checks/`.
 - Nothing is running: no Showdown servers, no training. Docker Desktop is up (only needed for Foul
   Play).
 
@@ -77,6 +80,10 @@ Everything here was measured on September 29-October 2 unless it says otherwise.
   53.0%, 20M beats 14M 53.8%, 20M beats 10M 52.3% (each ± 2.2%, both greedy); vs v18.3 it went
   from 62.8% to 67.2%, vs v19 from 73.9% to 75.4%, vs SimpleHeuristics unchanged. The 500-game
   in-training evals can't see gains this small. Details: `v20.md`, "Extension to 20M".
+- **Lower entropy bonus:** `ent_coef=0.02` (version `v20ent`, to 10M) made the policy much
+  sharper (entropy 0.80 vs 1.04 at 10M) but no stronger: head-to-heads vs v20 49.4% at 5M and
+  49.5% at 10M; vs SimpleHeuristics 80.2% vs 77.4% at 5M, 81.5% vs 83.7% at 10M. Details:
+  `v20.md`, "Entropy bonus 0.02".
 - **An A/B run:** v20 from scratch with one `--set` change and its own version name, stopping at
   5M for the checks (1 h 45 min to 2 h 10 min on power at 650-1,000 samples/s), then on to 10M
   unless it's clearly worse (section 4). From `pokemon-rl/`, e.g. for the `ent_coef` A/B:
@@ -131,8 +138,9 @@ Everything here was measured on September 29-October 2 unless it says otherwise.
 - Then (the 5M check only saves time; settings that change where training ends up show late, and
   v20 was still learning at 20M):
   - **Clearly worse or unstable at 5M:** stop and keep v20's value.
-  - **Otherwise:** continue to 10M and check against v20@10M. Level or ahead there: continue to 20M
-    and check against v20@20M. Behind at 10M: stop.
+  - **Otherwise:** continue to 10M and check against v20@10M. That's the verdict: v20 gained only
+    ~2-3 points head-to-head from 10M to 20M, so level at 10M means no gain (v20ent stopped
+    there). Clearly ahead at 10M: continue to 20M to measure the gain against v20@20M.
   - **Clearly ahead at the end** (head-to-head above ~53%, outside its ±2.2 noise): the final
     checks (`MODEL=... bash tools/final_checks_v20.sh`: 1,000 vs SimpleHeuristics, greedy
     head-to-heads vs v19 and v18.3) and 200 games vs Foul Play (section 6).
@@ -142,15 +150,15 @@ Everything here was measured on September 29-October 2 unless it says otherwise.
 ## 5. What next
 1. A/Bs, one change per run vs v20, compared at equal steps, to 10M by default (section 4; about
    4 hours each). The two so far only changed how fast v20 learns (section 2), so try the settings
-   that change what it converges to. The user agreed `ent_coef` then `gae_lambda`:
-   - `ent_coef` lower (vs 0.0588, e.g. 0.02): entropy is still 1.04 at 10M, and the sampled
-     policy, which plays every training game, is far weaker than the greedy one that's evaluated
-     (v20@5M greedy beats itself sampling 67.7%).
-   - `gae_lambda` 0.9-0.95 (vs 0.754): with ±1 only at the end of a ~30-decision game, λ = 0.754
-     leans hard on the value function, whose explained variance stops at 0.81 whatever the LR or
-     the value clip.
-   - `zero_avoid_coef` (0.005 vs 0 and 0.02), `embed_lr_mult` (10 vs 1).
-   - Done: the LR (x3; x2 or an LR floor would test the same thing) and the value clip.
+   that change what it converges to:
+   - `gae_lambda=0.95` (vs 0.754), **running since October 4** as version `v20gl`
+     (`logs/train_v20gl.log`; to 5M for checks, then on to 10M): with ±1 only at the end of a
+     ~30-decision game, λ = 0.754 leans hard on the value function, whose explained variance stops
+     at 0.81 whatever the LR, value clip or entropy bonus.
+   - `zero_avoid_coef` (0.005 vs 0 and 0.02), `embed_lr_mult` (10 vs 1): less promising.
+   - Done: the LR (x3; x2 or an LR floor would test the same thing), the value clip, and the
+     entropy bonus (0.02). Three null results in a row point past PPO settings, to the network
+     and its inputs (items 3-4).
 2. Train the winner longer. Without a winner, v20 itself keeps gaining slowly (~20-25 Elo per
    5M steps at 10-20M): `--version v20 --stop-at 30000000`, no `--set`. Its LR schedule ends at
    20M (`total_timesteps`), so the LR stays at 2.2e-6 from there. A `--version v20` run that
