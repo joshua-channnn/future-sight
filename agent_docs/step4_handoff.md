@@ -1,12 +1,13 @@
 # Handoff after step 3 (v20): hyperparameter A/Bs, then step 4
 
 For the agent that picks this up in a new chat. Written September 30, 2026, at the end of the
-session that built, trained and evaluated v20, and updated after three A/Bs and an extension
+session that built, trained and evaluated v20, and updated after four A/Bs and an extension
 (section 2): the **3x learning rate** (no gain), **no value clip** (a faster start, level with v20
-by 5M), **v20 extended to 20M** (still learning, slowly; the 20M model is the new best) and a
-**lower entropy bonus** (sharper, not stronger). The user agreed the `gae_lambda` A/B next; it
-started October 4 (`logs/train_v20gl.log`, section 5). Everything here was measured on
-September 29-October 4 unless it says otherwise.
+by 5M), **v20 extended to 20M** (still learning, slowly; the 20M model is the new best), a
+**lower entropy bonus** (sharper, not stronger) and **GAE λ 0.95** (clearly worse). None of the
+PPO settings tried raised v20's level; the recommendation is step 4, the network and its inputs
+(section 5), which is the user's call. Everything here was measured on September 29-October 4
+unless it says otherwise.
 
 ## 0. Start here
 1. Read this file, then `CLAUDE.md`. Skim `v20.md` (design, checks, results, the LR run) and
@@ -42,6 +43,7 @@ September 29-October 4 unless it says otherwise.
   | v20lr3 | 37.2 | 59.8 | 63.8 | 74.8 | 75.0 | 76.4 | 80.6 | 80.8 | 83.0 | 80.8 |
   | v20vf | 65.8 | 71.4 | 78.2 | 76.8 | 79.2 | | | | | |
   | v20ent | 56.0 | 68.2 | 76.0 | 73.6 | 78.4 | 80.2 | 82.2 | 82.0 | 80.4 | 80.4 |
+  | v20gl | 37.6 | 48.2 | 54.6 | 62.4 | 63.2 | | | | | |
 
   v20 from 11M to 20M: 84.6, 81.8, 81.6, 82.6, 83.8, 84.4, 88.0, 84.4, 83.8, 84.4.
 
@@ -55,7 +57,7 @@ September 29-October 4 unless it says otherwise.
   v20lr3: the same names with `v20lr3` (resumable at 10.04M), `logs/lr3_checks_5M/`,
   `logs/final_checks_step_0010041096/`. v20vf: the same names with `v20vf` (resumable at 5.02M),
   `logs/vf_checks/`. v20ent: the same names with `v20ent` (resumable at 10.03M),
-  `logs/ent_checks/`.
+  `logs/ent_checks/`. v20gl: the same names with `v20gl` (resumable at 5.03M), `logs/gl_checks/`.
 - Nothing is running: no Showdown servers, no training. Docker Desktop is up (only needed for Foul
   Play).
 
@@ -84,6 +86,10 @@ September 29-October 4 unless it says otherwise.
   sharper (entropy 0.80 vs 1.04 at 10M) but no stronger: head-to-heads vs v20 49.4% at 5M and
   49.5% at 10M; vs SimpleHeuristics 80.2% vs 77.4% at 5M, 81.5% vs 83.7% at 10M. Details:
   `v20.md`, "Entropy bonus 0.02".
+- **GAE λ 0.95:** `gae_lambda=0.95` (version `v20gl`, to 5M) was clearly worse: 35.6% ± 2.1%
+  head-to-head vs v20 at 5M, 63.9% vs SimpleHeuristics (v20: 77.4%), behind at every eval. The
+  noisier advantages (value fit 0.56 instead of 0.81) taught it far less per update. Details:
+  `v20.md`, "GAE λ 0.95".
 - **An A/B run:** v20 from scratch with one `--set` change and its own version name, stopping at
   5M for the checks (1 h 45 min to 2 h 10 min on power at 650-1,000 samples/s), then on to 10M
   unless it's clearly worse (section 4). From `pokemon-rl/`, e.g. for the `ent_coef` A/B:
@@ -150,15 +156,11 @@ September 29-October 4 unless it says otherwise.
 ## 5. What next
 1. A/Bs, one change per run vs v20, compared at equal steps, to 10M by default (section 4; about
    4 hours each). The two so far only changed how fast v20 learns (section 2), so try the settings
-   that change what it converges to:
-   - `gae_lambda=0.95` (vs 0.754), **running since October 4** as version `v20gl`
-     (`logs/train_v20gl.log`; to 5M for checks, then on to 10M): with ±1 only at the end of a
-     ~30-decision game, λ = 0.754 leans hard on the value function, whose explained variance stops
-     at 0.81 whatever the LR, value clip or entropy bonus.
-   - `zero_avoid_coef` (0.005 vs 0 and 0.02), `embed_lr_mult` (10 vs 1): less promising.
-   - Done: the LR (x3; x2 or an LR floor would test the same thing), the value clip, and the
-     entropy bonus (0.02). Three null results in a row point past PPO settings, to the network
-     and its inputs (items 3-4).
+   that change what it converges to. Done: the LR (x3; x2 or an LR floor would test the same
+   thing), the value clip, the entropy bonus (0.02) and GAE λ (0.95, clearly worse). None raised
+   v20's level, which points past PPO settings to the network and its inputs (items 3-4).
+   Left, all low-promise: λ below 0.754 (e.g. 0.6), `zero_avoid_coef` (0 and 0.02),
+   `embed_lr_mult` (1).
 2. Train the winner longer. Without a winner, v20 itself keeps gaining slowly (~20-25 Elo per
    5M steps at 10-20M): `--version v20 --stop-at 30000000`, no `--set`. Its LR schedule ends at
    20M (`total_timesteps`), so the LR stays at 2.2e-6 from there. A `--version v20` run that

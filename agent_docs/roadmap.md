@@ -8,8 +8,8 @@
   83.9%, 75.4% and 67.2%, and 52.3% ± 2.2% against its 10M self. Its in-training evals: 54.0% at
   1M (v19: 13.4%), 68.0% at 2M (34.0%), 80.6% at 5M (51.0%), 83.4% at 10M (63.0%), then 82-88%
   to 20M (500-game evals can't show the slow late gain). A 3x learning rate and dropping the
-  value clip changed how fast it learns, not where it ends up, and a lower entropy bonus made it
-  sharper, not stronger (`v20.md`).
+  value clip changed how fast it learns, not where it ends up, a lower entropy bonus made it
+  sharper, not stronger, and GAE λ 0.95 made it clearly worse (`v20.md`).
 - v19 = the v18 architecture plus bug fixes (see `poke_env_gotchas.md`), sparse reward and Wang's
   full PPO recipe. Trained from scratch to 10M steps on a GCP VM (20 envs) and stopped there on
   purpose. In-training evals vs SimpleHeuristics (500 games each): 13.4% at 1M, 34.0% at 2M,

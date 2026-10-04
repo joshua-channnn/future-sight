@@ -21,6 +21,9 @@
   with both greedy they are 73.9% ± 1.9% and 62.8% ± 2.1%. `tools/final_checks_v20.sh` now passes
   the flag.
 - An SB3 model can also be evaluated against a v20 opponent (`--opp-model models/Y.pt`).
+- A battle that stalls for 60 s ends the whole eval with `EnvTimeout` (training rebuilds the env
+  instead; the eval path has no recovery). It's rare, about once in 20 runs of 1,000-2,000 games:
+  rerun it.
 - Every eval env handles requests after the turn's log (`poke_env_gotchas.md` item 9).
 
 ## How many games
