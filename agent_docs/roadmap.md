@@ -87,20 +87,20 @@
    move a move logit and a tera+move logit), a shared trunk, two-sided self-play (record both
    players when both run the current policy, as Wang did), legality-only masks plus Jaxcalibur's
    zero-avoiding term, and the missing inputs.
-   Next for v20, before or alongside step 4: the like-for-like run kept v19's hyperparameters,
-   and approx_kl stayed at 0.0004-0.0018 (target ~0.01), so A/B a higher learning rate first,
-   then `clip_range_vf` (0.0184 vs None), `gae_lambda` (0.754 vs 0.9-0.95) and
-   `zero_avoid_coef`; and train on past 10M (the curve was still inching up). The v20 tokens
-   are the input step 4's attention trunk needs.
-4. Entity-token transformer (3-4 layers, d=128-192) over the field, 6+6 Pokémon, 4 moves and the
-   last 8-16 events from `battle.observations`. Auxiliary heads for the opponent's next action and
-   its hidden item, ability, moves and tera type; in self-play the labels are free from `battle2`.
+   Then (September 30-October 4): A/Bs of the learning rate (x3), the value clip (off), the
+   entropy bonus (0.02) and `gae_lambda` (0.95), and v20 extended to 20M. None raised v20's level;
+   only training longer helped, a little (`v20.md`). The v20 tokens are the input step 4's
+   attention trunk needs.
+4. Next; brief in `step4_brief.md`. Entity-token transformer (3-4 layers, d=128-192) over the
+   field, 6+6 Pokémon, 4 moves and the last 8-16 events from `battle.observations`. Auxiliary heads
+   for the opponent's next action and its hidden item, ability, moves and tera type; in self-play
+   the labels are free from `battle2`. On this Mac the transformer makes each PPO update roughly
+   6-8x longer (~1 minute instead of 7-10 s; `step4_brief.md` section 4.6).
 5. Scale out on a many-core cloud machine (~2 cores per env), with the PPO update on a GPU.
 6. Search last. It added about 100-150 Elo on top of Jaxcalibur's network.
 
-Also A/B two Wang settings that were tuned on 3v3 battles, which are half as long:
-`clip_range_vf` (0.0184 vs None; in SB3 it caps each state's value change per update and zeroes
-the gradient past that) and `gae_lambda` (0.754 vs 0.9-0.95).
+Two Wang settings tuned on 3v3 battles, which are half as long, were A/B'd on v20: `clip_range_vf`
+(None only gave a faster start) and `gae_lambda` (0.95 was clearly worse). Results in `v20.md`.
 
 Fold the cleanup into step 3, since it needs a from-scratch run anyway: remove the hand-made
 features (oscillation detector, "opponent seems passive", game-phase flags, hand-picked item and

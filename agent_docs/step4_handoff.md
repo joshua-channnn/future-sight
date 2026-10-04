@@ -1,5 +1,9 @@
 # Handoff after step 3 (v20): hyperparameter A/Bs, then step 4
 
+> **Status (October 4, 2026): the A/Bs are done** (section 2). The next job, step 4, has its own
+> brief: `step4_brief.md`. This file stays the reference for running, monitoring and judging runs on
+> this Mac (sections 2-4, 6-8).
+
 For the agent that picks this up in a new chat. Written September 30, 2026, at the end of the
 session that built, trained and evaluated v20, and updated after four A/Bs and an extension
 (section 2): the **3x learning rate** (no gain), **no value clip** (a faster start, level with v20

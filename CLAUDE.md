@@ -76,5 +76,7 @@ v17-v19 (SB3):
 - architecture changes or deciding what to do next: `agent_docs/roadmap.md`
 - v20 (design, checks, throughput, results): `agent_docs/v20.md`; the step 3 brief it was built
   from: `agent_docs/step3_handoff.md`
-- what to do next (the LR run's result, hyperparameter A/Bs with commands and how to judge them,
-  then step 4): `agent_docs/step4_handoff.md`
+- building step 4 (v21: attention over the tokens, battle history, auxiliary heads), the next job:
+  `agent_docs/step4_brief.md`
+- the v20 A/Bs and how runs are started, monitored and judged on this Mac:
+  `agent_docs/step4_handoff.md`
