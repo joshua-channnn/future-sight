@@ -238,7 +238,8 @@ def opponent_player(path, deterministic, port):
 
 
 def main_v20(args):
-    """Evaluate a v20 checkpoint (.pt): the v20 env, the v20 policy, any opponent."""
+    """Evaluate a torch checkpoint (.pt, v20 or v21): the RLEnvV20 env, the checkpoint's policy
+    (its arch picks the featurizer and network), any opponent."""
     from players.v20_player import V20Policy, load_opponent
     from eval.v20_eval import play_games, print_actions
     from poke_env.player import RandomPlayer, SimpleHeuristicsPlayer
@@ -257,7 +258,7 @@ def main_v20(args):
         sys.exit(1)
     seats = {"1": [1], "2": [2], "both": [1, 2]}[args.seat]
     print("=" * 70)
-    print(f"Pokemon RL - Evaluation (v20)\nModel: {args.model}\nBattles per opponent per seat: "
+    print(f"Pokemon RL - Evaluation ({policy.arch})\nModel: {args.model}\nBattles per opponent per seat: "
           f"{args.battles} | seats: {seats}")
     print("=" * 70)
     results = {}
@@ -283,7 +284,7 @@ def main_v20(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate a Pokemon RL model (v17-v19 SB3 zips, v20 .pt)")
+    parser = argparse.ArgumentParser(description="Evaluate a Pokemon RL model (v17-v19 SB3 zips, v20/v21 .pt)")
     parser.add_argument("--model", type=str,
                         default="models/ppo_pokemon_6v6_v18.3_best",
                         help="Path to model (auto-detects architecture)")
@@ -299,7 +300,7 @@ def main():
     parser.add_argument("--port", type=int, default=EVAL_PORT,
                         help="Pokemon Showdown server port")
     parser.add_argument("--seat", choices=["1", "2", "both"], default="1",
-                        help="v20 models: play as the challenger (1, p1), the challenged side (2), or both")
+                        help=".pt models: play as the challenger (1, p1), the challenged side (2), or both")
     args = parser.parse_args()
     if args.model.endswith(".pt") or os.path.exists(args.model + ".pt"):
         if not args.model.endswith(".pt"):

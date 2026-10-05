@@ -18,6 +18,10 @@ A reinforcement learning bot for Gen 9 Random Battles on [Pokemon Showdown](http
 v20 at 10M steps (the best model until October 2, 2026, still in git history) won 83.7% vs
 SimpleHeuristics, 73.9% vs v19 and 62.8% vs v18.3.
 
+v21 (v20 plus battle history, a transformer over the tokens and auxiliary prediction heads,
+October 2026) is level with v20 at equal steps: 48.1% ± 2.2% head-to-head at 10M steps, 80.6% ±
+2.5% vs SimpleHeuristics (`agent_docs/v21.md`).
+
 The previous best, `models/ppo_pokemon_6v6_v18.3_best.zip`, wins 94.7% ± 1.4% vs RandomPlayer,
 67.9% ± 2.9% vs SimpleHeuristics and 60.4% ± 3.0% vs v17.3sp (1,000 games each). Earlier versions
 of this table counted episodes with positive reward as wins, which overstated results (e.g. 73.2%
@@ -109,20 +113,23 @@ See the instructions at the top of `eval/foulplay_eval.py`.
 
 ```
 ├── players/                          # Player wrappers + deployment bots
-│   ├── v20_player.py                 #   v20 policy / player, and loading of any model as an opponent
+│   ├── v20_player.py                 #   v20/v21 policy / player, and loading of any model as an opponent
 │   ├── ppo_player.py                 #   SB3 inference player (auto-detects v17-v19 models)
 │   ├── play_bot.py                   #   Play against the bot locally
 │   └── ladder_bot.py                 #   Run on the Showdown ladder
 ├── envs/                             # RL environments
 │   ├── rl_player_v20.py              #   v20 tokens, 14-action mapping, two-agent env
+│   ├── rl_player_v21.py              #   v21: v20's tokens plus battle history, aux labels
 │   ├── rl_player_6v6_v18.py          #   v18/v19 observation space (677-dim)
 │   ├── rl_player_6v6.py              #   v17 observation space (640-dim), for loading v17 models
 │   └── wrappers.py                   #   Maskable action wrapper (SB3)
 ├── networks/
 │   ├── v20_policy.py                 #   v20 network (per-token heads, shared trunk)
+│   ├── v21_policy.py                 #   v21 network (transformer, per-token and aux heads)
+│   ├── registry.py                   #   arch name -> featurizer and network, for loading
 │   └── embedding_extractor*.py       #   v17-v19 feature extractors
 ├── training/
-│   ├── ppo_v20.py                    #   v20 PPO loop (workers, two-sided self-play, pool, evals)
+│   ├── ppo_v20.py                    #   v20/v21 PPO loop (workers, two-sided self-play, pool, evals)
 │   └── ppo_embed_train_selfplay.py   #   SB3 self-play training (v17-v19)
 ├── eval/
 │   ├── ppo_test.py                   #   Evaluate models vs Random / SimpleHeuristics / other models

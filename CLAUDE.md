@@ -18,6 +18,17 @@ v20 (details in `agent_docs/v20.md`):
 - `eval/v20_eval.py`: evaluation games for v20; `eval/ppo_test.py` routes `.pt` models there.
 - `tools/`: checks against live battles (`check_v20_*`), `bench_sb3.py`, `run_v20_mac.sh`.
 
+v21 (step 4: v20 plus battle history, a transformer and auxiliary heads; level with v20, details
+in `agent_docs/v21.md`):
+- `envs/rl_player_v21.py`: `Featurizer` (v20's observation plus 16 history tokens), the aux labels
+  (`set_labels`, `next_action_label`, read from the other side's battle object).
+- `networks/v21_policy.py`: `V21Net`, the aux losses and metrics, per-species base rates.
+- `networks/registry.py`: arch name (`v20`, `v21`) -> featurizer, network, layout. Checkpoints
+  store their arch; `V20Policy.load` and everything that loads models route through it.
+- Trained by `training/ppo_v20.py --arch v21`; checks `tools/check_v21_env.py`,
+  `tools/check_v21_net.py`, `tools/check_v20_selfplay.py --arch v21`,
+  `ARCH=v21 bash tools/check_v20_resume.sh`.
+
 v17-v19 (SB3):
 - `envs/rl_player_6v6_v18.py`: the environment. Observation (677 floats: 12 Pokémon blocks,
   active-move details, global features), reward (`reward_mode`: `sparse` or `shaped`), action
@@ -49,7 +60,8 @@ v17-v19 (SB3):
   defaults to 8004.
 - v20: `python3 -m training.ppo_v20 --workers 6 --servers 3 --stop-at 10000000` (resumes from
   `_latest.pt` automatically; `--set KEY=VALUE` overrides any `CONFIG` entry, and a resumed run
-  must repeat the same `--set` flags or it refuses to start). On the MacBook, `tools/run_v20_mac.sh` wraps it: it pauses the run
+  must repeat the same `--set` flags or it refuses to start; `--arch v21` trains v21, as version
+  `v21` unless `--version` says otherwise). On the MacBook, `tools/run_v20_mac.sh` wraps it: it pauses the run
   when the battery gets low and resumes on power. Each Showdown server is ~10 node processes and
   ~1.2 GB; don't leave unused ones running on the 16 GB Mac.
 - Evaluate a v20 model: `python3 -m eval.ppo_test --model models/X.pt --opponents simple --battles 1000 --port 8123`
@@ -58,7 +70,8 @@ v17-v19 (SB3):
 - There is no test suite. To check a change: `python3 -m py_compile` the touched files, then run a
   short eval, `python3 -m eval.ppo_test --opponents simple --battles 400 --port 8123`. For v20 env
   or trainer changes also run `python3 -m tools.check_v20_env --games 50 --port 8123` (features
-  vs ground truth, action mapping, orders) and `python3 -m tools.check_v20_selfplay --port 8123`.
+  vs ground truth, action mapping, orders) and `python3 -m tools.check_v20_selfplay --port 8123`
+  (v21: `tools.check_v21_env`, `tools.check_v21_net`, `tools.check_v20_selfplay --arch v21`).
 
 ## Rules for every task
 - Count wins with `battle.won` / `info["battle_won"]`, never with the sign of the episode reward.
@@ -76,7 +89,7 @@ v17-v19 (SB3):
 - architecture changes or deciding what to do next: `agent_docs/roadmap.md`
 - v20 (design, checks, throughput, results): `agent_docs/v20.md`; the step 3 brief it was built
   from: `agent_docs/step3_handoff.md`
-- building step 4 (v21: attention over the tokens, battle history, auxiliary heads), the next job:
-  `agent_docs/step4_brief.md`
+- v21 (step 4: attention over the tokens, battle history, auxiliary heads; built and run, no
+  gain): `agent_docs/v21.md`; the brief it was built from: `agent_docs/step4_brief.md`
 - the v20 A/Bs and how runs are started, monitored and judged on this Mac:
   `agent_docs/step4_handoff.md`

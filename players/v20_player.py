@@ -1,8 +1,11 @@
-"""v20 inference: V20Policy (network + featurizer, used by training workers, evaluation and
-self-play pools) and V20Player (a poke-env Player for live play and as an evaluation opponent).
+"""Inference for torch checkpoints (v20, v21): V20Policy (network + featurizer, used by training
+workers, evaluation and self-play pools) and V20Player (a poke-env Player for live play and as an
+evaluation opponent).
 
-Checkpoints are torch files ({"arch": "v20", "net_config", "layout", "model", ...}), unlike the
-SB3 zips of v17-v19. `load_opponent` returns the right player for either kind.
+Checkpoints are torch files ({"arch": "v20" or "v21", "net_config", "layout", "model", ...}),
+unlike the SB3 zips of v17-v19; networks/registry.py maps each arch to its featurizer and network.
+Both archs share the 14-action space, so one policy class serves both. `load_opponent` returns the
+right player for a torch checkpoint or an SB3 zip.
 """
 import asyncio
 
@@ -11,41 +14,46 @@ import torch
 
 from poke_env.player import DefaultBattleOrder, Player
 
-from envs.rl_player_v20 import LAYOUT, Featurizer, action_to_order, hold_requests_until_log
-from networks.v20_policy import V20Net
+from envs.rl_player_v20 import Featurizer, action_to_order, hold_requests_until_log
+from networks import registry
 
 
 def is_v20_checkpoint(path):
+    """A torch checkpoint (any arch), as opposed to an SB3 zip."""
     return str(path).endswith(".pt")
 
 
 def load_checkpoint(path):
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
-    if ckpt.get("arch") != "v20":
-        raise ValueError(f"{path} is not a v20 checkpoint (arch={ckpt.get('arch')!r})")
+    arch = ckpt.get("arch")
+    if arch not in registry.ARCHS:
+        raise ValueError(f"{path} has an unknown arch {arch!r} (known: {sorted(registry.ARCHS)})")
     saved = ckpt.get("layout")
-    if saved is not None:
-        same = {k: v for k, v in saved.items()} == {k: v for k, v in LAYOUT.items()}
-        if not same:
-            raise ValueError(f"{path} was saved with a different observation layout; "
-                             "it needs the env code it was trained with")
+    if saved is not None and dict(saved) != dict(registry.expected_layout(arch, saved)):
+        raise ValueError(f"{path} was saved with a different observation layout; "
+                         "it needs the env code it was trained with")
     return ckpt
 
 
 class V20Policy:
-    """Chooses v20 actions for a battle, from that battle's player's point of view."""
+    """Chooses actions for a battle, from that battle's player's point of view, with a v20 or v21
+    network and the matching featurizer."""
 
-    def __init__(self, net, deterministic=False, featurizer=None):
+    def __init__(self, net, deterministic=False, featurizer=None, arch="v20"):
         self.net = net.eval()
         self.deterministic = deterministic
         self.featurizer = featurizer or Featurizer()
+        self.arch = arch
 
     @classmethod
     def load(cls, path, deterministic=False, featurizer=None):
         ckpt = load_checkpoint(path)
-        net = V20Net(ckpt.get("net_config"))
+        arch = ckpt["arch"]
+        spec = registry.get(arch)
+        layout = ckpt.get("layout") or spec.layout()
+        net = spec.net(ckpt.get("net_config"), layout)
         net.load_state_dict(ckpt["model"])
-        return cls(net, deterministic, featurizer)
+        return cls(net, deterministic, featurizer or spec.featurizer(layout), arch)
 
     def action(self, battle):
         idx, flt, mask = self.featurizer.featurize(battle)
@@ -61,7 +69,7 @@ class V20Policy:
 
 
 class V20Player(Player):
-    """poke-env Player driven by a v20 checkpoint.
+    """poke-env Player driven by a v20 or v21 checkpoint.
 
     choose_move returns an awaitable inside poke-env's event loop (live play) and an order when
     called synchronously (as an opponent stepped by an env, e.g. in eval/ppo_test.py).
@@ -93,8 +101,8 @@ class V20Player(Player):
 
 
 def load_opponent(path, deterministic=False, data_dir="data", **player_kwargs):
-    """An opponent for env-stepped play: V20Policy for .pt checkpoints (returns int actions),
-    PPOPlayer for SB3 zips (returns orders)."""
+    """An opponent for env-stepped play: V20Policy for torch checkpoints of any arch (returns int
+    actions), PPOPlayer for SB3 zips (returns orders)."""
     if is_v20_checkpoint(path):
         return V20Policy.load(path, deterministic)
     from players.ppo_player import PPOPlayer
@@ -104,7 +112,8 @@ def load_opponent(path, deterministic=False, data_dir="data", **player_kwargs):
 
 
 def opponent_decision(opponent, battle):
-    """What an env-stepped opponent plays: an int action (v20) or a BattleOrder (anything else)."""
+    """What an env-stepped opponent plays: an int action (v20/v21 policies) or a BattleOrder
+    (anything else)."""
     if isinstance(opponent, V20Policy):
         return opponent.action(battle)
     return opponent.choose_move(battle)

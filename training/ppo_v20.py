@@ -1,5 +1,6 @@
-"""v20 training: a CleanRL-style PPO loop with worker processes, two-sided self-play and the
-v20 network (envs/rl_player_v20.py, networks/v20_policy.py). Replaces SB3 for v20.
+"""v20/v21 training: a CleanRL-style PPO loop with worker processes, two-sided self-play and the
+network of `CONFIG["arch"]` (networks/registry.py): v20 (envs/rl_player_v20.py,
+networks/v20_policy.py) or v21 (envs/rl_player_v21.py, networks/v21_policy.py). Replaces SB3.
 
 Collection: W worker processes, each with one env (two agents) on a Showdown server, a CPU copy
 of the current weights and one torch thread. Each update the learner sends the weights and a
@@ -7,14 +8,17 @@ sample quota; a worker plays whole games until it has its quota, then returns th
 GAE already computed. Workers never wait on each other within an update, only at its end.
 
 Opponents per game: `heuristic_ratio` SimpleHeuristics; the rest are split between the live
-policy (both sides recorded: two-sided self-play) and a uniformly chosen pool member (v20
-snapshots, plus the old SB3 seed models); only the learner's side is recorded against those.
+policy (both sides recorded: two-sided self-play) and a uniformly chosen pool member (snapshots
+of this run, plus the old SB3 seed models); only the learner's side is recorded against those.
 
 PPO follows SB3's MaskablePPO (clipped surrogate, SB3-style value clipping, per-minibatch
 advantage normalization, entropy bonus, grad clipping), plus the zero-avoiding term:
-KL(uniform over legal actions || policy).
+KL(uniform over legal actions || policy). v21 adds auxiliary losses (`aux_*_coef`): every sample
+carries labels read from the other side's battle object (the opponent's hidden set and its action
+at the same decision), and the update adds the weighted cross-entropies to the PPO loss.
 
     python3 -m training.ppo_v20 --workers 6 --servers 3          # train (resumes automatically)
+    python3 -m training.ppo_v20 --arch v21 --workers 6 --servers 3 --stop-at 10000000   # version v21
     python3 -m training.ppo_v20 --opponents heuristic --version v20sh --stop-at 2000000
 """
 import argparse
@@ -38,7 +42,8 @@ import torch.nn.functional as F
 BASE_PORT = 8000
 
 CONFIG = {
-    "version": "v20",
+    "version": "v20",                # defaults to the arch when --arch is given without --version
+    "arch": "v20",                   # networks/registry.py: v20 or v21
     "total_timesteps": 20_000_000,   # learning-rate schedule horizon (Wang's schedule over 20M)
     "stop_at": None,                 # stop once this many steps are done (None: total_timesteps)
 
@@ -68,6 +73,15 @@ CONFIG = {
     "ent_coef": 0.0588,
     "vf_coef": 0.4375,
     "zero_avoid_coef": 0.005,        # KL(uniform over legal || pi); Jaxcalibur gives no value
+
+    # v21 only: history tokens and auxiliary losses (weights of each head's cross-entropy)
+    "history_len": 16,               # battle events in the observation
+    "aux_next_coef": 0.1,            # the opponent's action at the same decision
+    "aux_item_coef": 0.05,           # per revealed opponent: its item, base ability, tera type, moves
+    "aux_ability_coef": 0.05,
+    "aux_tera_coef": 0.05,
+    "aux_moves_coef": 0.05,
+
     "update_threads": None,          # torch threads for a CPU update (None: all cores)
     "update_device": "auto",         # cuda, else mps (Apple GPU: 2.7x the M3's CPU), else cpu
 
@@ -91,7 +105,7 @@ CONFIG = {
     "save_freq": 200_000,
 
     "allow_config_change": False,    # resume even if the settings below differ from the checkpoint's
-    "net_config": None,              # networks.v20_policy.DEFAULT_CONFIG when None
+    "net_config": None,              # the arch's DEFAULT_CONFIG (networks/v2x_policy.py) when None
     "model_dir": "models",
     "log_dir": "logs",
     "data_dir": "data",
@@ -104,7 +118,10 @@ RESUME_CHECK_KEYS = (
     "total_timesteps", "lr_initial", "lr_final", "lr_decay_exponent", "embed_lr_mult", "adam_eps",
     "gamma", "gae_lambda", "clip_range", "clip_range_vf", "n_epochs", "batch_size",
     "steps_per_update", "max_grad_norm", "ent_coef", "vf_coef", "zero_avoid_coef", "opponents",
-    "heuristic_ratio", "latest_opponent_ratio", "pool_save_freq", "max_pool_size", "net_config")
+    "heuristic_ratio", "latest_opponent_ratio", "pool_save_freq", "max_pool_size", "net_config",
+    "arch", "history_len", "aux_next_coef", "aux_item_coef", "aux_ability_coef", "aux_tera_coef",
+    "aux_moves_coef")
+AUX_HEADS = ("next", "item", "ability", "tera", "moves")
 
 
 def server_config(port):
@@ -152,17 +169,21 @@ def gae(values, final_reward, gamma, lam):
 class Worker:
     def __init__(self, wid, cfg):
         torch.set_num_threads(1)
-        from envs.rl_player_v20 import Featurizer, disable_turn_snapshots
+        from envs.rl_player_v20 import disable_turn_snapshots
         disable_turn_snapshots()
-        from networks.v20_policy import V20Net
+        from networks import registry
         from poke_env.player import SimpleHeuristicsPlayer
         self.wid, self.cfg = wid, cfg
         self.rng = random.Random((cfg.get("seed") or random.randrange(1 << 30)) + 7919 * wid)
         if cfg.get("seed") is not None:
             torch.manual_seed(cfg["seed"] + 7919 * wid)
         self.port = cfg["base_port"] + wid % cfg["n_servers"]
-        self.fz = Featurizer()
-        self.net = V20Net(cfg.get("net_config")).eval()
+        spec = registry.get(cfg["arch"])
+        layout = spec.layout(cfg)
+        self.fz = spec.featurizer(layout)
+        self.net = spec.net(cfg.get("net_config"), layout).eval()
+        self.labels = spec.has_labels
+        self.game_labels = []
         self.sh = SimpleHeuristicsPlayer(battle_format="gen9randombattle", start_listening=False)
         self.pool_cache = OrderedDict()
         self.env = None
@@ -201,15 +222,17 @@ class Worker:
             return "live", None
         path = self.rng.choice(pool)
         try:
-            return ("pool_v20" if path.endswith(".pt") else "pool_sb3"), self.opponent(path)
+            opp = self.opponent(path)
+            return f"pool_{getattr(opp, 'arch', 'sb3')}", opp
         except Exception as e:
             self.errors["opponent load failed"] += 1
             print(f"[worker {self.wid}] could not load {path}: {e}", flush=True)
             return "live", None
 
     def play_game(self, pool):
-        """One complete game. Returns (kind, [(samples, won)] per recorded side) or None if the
-        game was abandoned."""
+        """One complete game. Returns (kind, [(samples, won)] per recorded side, learner decisions)
+        or None if the game was abandoned. With aux labels (v21), self.game_labels then holds one
+        list of label rows per returned side, one row per sample."""
         from players.v20_player import opponent_decision
         kind, opp = self.pick_opponent(pool)
         env = self.env
@@ -217,14 +240,19 @@ class Worker:
         a1, a2 = env.agent1.username, env.agent2.username
         record = {1: True, 2: kind == "live"}
         traj = {1: [], 2: []}
+        labels = {1: [], 2: []}
         n_dec = {1: 0, 2: 0}
+        if self.labels:
+            from envs.rl_player_v21 import LAB_NEXT, N_LAB, illusion_game, next_action_label, set_labels
+            no_labels = illusion_game(env.battle1, env.battle2)
         while not env.battle1.finished:
             b1, b2 = env.battle1, env.battle2
             acts = {a1: 0, a2: 0}
+            choosing = {1: env.agent1_to_move and not b1.finished, 2: env.agent2_to_move and not b2.finished}
             live = []
-            if env.agent1_to_move and not b1.finished:
+            if choosing[1]:
                 live.append((1, a1, b1))
-            if env.agent2_to_move and not b2.finished:
+            if choosing[2]:
                 if kind == "live":
                     live.append((2, a2, b2))
                 else:
@@ -246,15 +274,29 @@ class Worker:
                     if record[side]:
                         traj[side].append((feats[j][0].astype(np.int16), feats[j][1], feats[j][2], a,
                                            float(logp[j]), float(val[j])))
+                if self.labels:
+                    # only now is every choice of this step known (the other side's is the label)
+                    for side, agent, b in live:
+                        if not record[side]:
+                            continue
+                        if no_labels:
+                            row = np.full(N_LAB, -1, dtype=np.int16)
+                        else:
+                            other = b2 if side == 1 else b1
+                            row = set_labels(b, other)
+                            if choosing[3 - side]:
+                                row[LAB_NEXT] = next_action_label(b, other, acts[a2 if side == 1 else a1])
+                        labels[side].append(row)
             if max(n_dec.values()) > self.cfg["max_decisions"]:
                 self.errors["game too long (dropped)"] += 1
                 self.new_env()
                 return None
             env.step(acts)
-        out = []
+        out, self.game_labels = [], []
         for side, battle in ((1, env.battle1), (2, env.battle2)):
             if record[side] and traj[side]:
                 out.append((traj[side], battle.won))
+                self.game_labels.append(labels[side])
         return kind, out, n_dec[1]
 
     def collect(self, weights, quota, pool):
@@ -302,6 +344,8 @@ class Worker:
                     buf["val"].append(s[5])
                 buf["adv"].append(adv)
                 buf["ret"].append(ret)
+                if self.labels:
+                    buf["lab"] += self.game_labels[j]
                 n += len(steps)
         stats["samples"] = n
         stats["collect_s"] = time.time() - t0
@@ -316,6 +360,8 @@ class Worker:
             "adv": np.concatenate(buf["adv"]).astype(np.float32),
             "ret": np.concatenate(buf["ret"]).astype(np.float32),
         }
+        if self.labels:
+            data["lab"] = np.stack(buf["lab"])
         return data, stats
 
 
@@ -395,9 +441,8 @@ class Pool:
         return path
 
 
-def model_state(model, extra=None):
-    from envs.rl_player_v20 import LAYOUT
-    state = {"arch": "v20", "net_config": model.config, "layout": LAYOUT,
+def model_state(model, arch, extra=None):
+    state = {"arch": arch, "net_config": model.config, "layout": dict(model.layout),
              "model": {k: v.detach().cpu() for k, v in model.state_dict().items()}}
     state.update(extra or {})
     return state
@@ -419,12 +464,26 @@ def update_device(cfg):
     return torch.device(want)
 
 
-def ppo_update(model, optimizer, data, cfg, device):
+def _grad_norm(model):
+    return torch.linalg.vector_norm(torch.stack([p.grad.detach().norm() for p in model.parameters()
+                                                 if p.grad is not None]))
+
+
+def ppo_update(model, optimizer, data, cfg, device, baseline=None):
     """SB3-style PPO epochs over the rollout. Minibatches are gathered on the CPU and all have
     batch_size samples (each epoch drops a random remainder of under batch_size): the MPS backend
     caches a compiled graph per input shape, about 57 MB each, and a partial last minibatch of a
     new size every update grew the learner by that much per update (7.6 GB after 150 updates).
-    SB3's v19 rollouts were exactly 40 x 1024, so it never had partial minibatches either."""
+    SB3's v19 rollouts were exactly 40 x 1024, so it never had partial minibatches either.
+
+    With labels (data["lab"], v21) the loss adds sum(aux_<head>_coef * aux loss). Aux accuracies are
+    measured in the first epoch, each minibatch before its own gradient step (so on samples the
+    network hasn't trained on), next to the per-species base rates of `baseline` (AuxBaseline).
+    The gradient norms of the PPO and aux losses alone are measured on the middle minibatch of
+    every epoch (the first one of an update is dominated by the value loss): they share
+    max_grad_norm and Adam's moments, so a large aux gradient would shrink the PPO step.
+    `grad_ppo_kept` is the share of the PPO step the shared clip keeps relative to clipping the PPO
+    gradient alone (1 = the aux losses cost the PPO step nothing at the clip)."""
     idx = torch.as_tensor(data["idx"])      # int16
     flt = torch.as_tensor(data["flt"])      # float16
     mask = torch.as_tensor(data["mask"])
@@ -433,19 +492,44 @@ def ppo_update(model, optimizer, data, cfg, device):
     old_val = torch.as_tensor(data["val"])
     advs = torch.as_tensor(data["adv"])
     rets = torch.as_tensor(data["ret"])
+    use_aux = "lab" in data and getattr(model, "has_aux", False)
+    if use_aux:
+        from networks.v21_policy import aux_obs, aux_terms
+        lab = torch.as_tensor(data["lab"])  # int16
+        coefs = {h: cfg[f"aux_{h}_coef"] for h in AUX_HEADS}
+        base_tables = baseline.device_tables(device) if baseline is not None else None
+        acc, base_acc = defaultdict(list), defaultdict(list)
     N = len(act)
     bs = min(cfg["batch_size"], N)
     n_mb = N // bs
     clip, clip_vf = cfg["clip_range"], cfg["clip_range_vf"]
     logs = defaultdict(list)  # device tensors, read once at the end (no per-step syncs)
     model.train()
-    for _ in range(cfg["n_epochs"]):
+    for epoch in range(cfg["n_epochs"]):
         perm = torch.randperm(N)
         for k in range(n_mb):
             mb = perm[k * bs:(k + 1) * bs]
-            logp, ent, val, kl_u = model.evaluate_actions(
-                idx[mb].to(device).long(), flt[mb].to(device).float(), mask[mb].to(device),
-                act[mb].to(device))
+            idx_mb, flt_mb = idx[mb].to(device).long(), flt[mb].to(device).float()
+            aux_loss = None
+            if use_aux:
+                logp, ent, val, kl_u, aux_out = model.evaluate_actions(
+                    idx_mb, flt_mb, mask[mb].to(device), act[mb].to(device), aux=True)
+                obs = aux_obs(idx_mb, flt_mb, model.layout)
+                lab_mb = lab[mb].to(device).long()
+                losses, mets = aux_terms(aux_out, lab_mb, obs, metrics=epoch == 0)
+                aux_loss = sum(coefs[h] * losses[h] for h in AUX_HEADS)
+                for h in AUX_HEADS:
+                    logs[f"aux_loss_{h}"].append(losses[h].detach())
+                for name, (c, n) in mets.items():
+                    acc[name].append(torch.stack([c, n]).float())
+                if epoch == 0 and base_tables is not None:
+                    with torch.no_grad():
+                        _, bmets = aux_terms(baseline.logits(obs, base_tables), lab_mb, obs, metrics=True)
+                    for name, (c, n) in bmets.items():
+                        base_acc[name].append(torch.stack([c, n]).float())
+            else:
+                logp, ent, val, kl_u = model.evaluate_actions(
+                    idx_mb, flt_mb, mask[mb].to(device), act[mb].to(device))
             adv = advs[mb].to(device)
             if bs > 1:
                 adv = (adv - adv.mean()) / (adv.std() + 1e-8)
@@ -461,10 +545,33 @@ def ppo_update(model, optimizer, data, cfg, device):
             ent_loss = -ent.mean()
             za = kl_u.mean()
             loss = pg + cfg["ent_coef"] * ent_loss + cfg["vf_coef"] * v_loss + cfg["zero_avoid_coef"] * za
+            measure = aux_loss is not None and k == n_mb // 2
+            if aux_loss is not None:
+                if measure:
+                    optimizer.zero_grad(set_to_none=True)
+                    loss.backward(retain_graph=True)
+                    g_ppo = _grad_norm(model)
+                    optimizer.zero_grad(set_to_none=True)
+                    aux_loss.backward(retain_graph=True)
+                    g_aux = _grad_norm(model)
+                logs["ppo_loss"].append(loss.detach())
+                loss = loss + aux_loss
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["max_grad_norm"])
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["max_grad_norm"])
             optimizer.step()
+            if measure:
+                with torch.no_grad():
+                    mx = cfg["max_grad_norm"]
+                    logs["grad_norm_ppo"].append(g_ppo)
+                    logs["grad_norm_aux"].append(g_aux)
+                    logs["grad_norm_measured"].append(grad_norm.detach())
+                    # |ppo + aux|^2 = |ppo|^2 + |aux|^2 + 2 ppo.aux
+                    logs["grad_cos_ppo_aux"].append(
+                        (grad_norm ** 2 - g_ppo ** 2 - g_aux ** 2) / (2 * g_ppo * g_aux + 1e-12))
+                    # share of the PPO step the shared clip keeps, relative to clipping PPO alone
+                    logs["grad_ppo_kept"].append(torch.clamp(mx / grad_norm, max=1.0) /
+                                                 torch.clamp(mx / g_ppo, max=1.0))
             with torch.no_grad():
                 logs["approx_kl"].append(((ratio - 1) - log_ratio).mean())
                 logs["clip_fraction"].append(((ratio - 1).abs() > clip).float().mean())
@@ -473,9 +580,19 @@ def ppo_update(model, optimizer, data, cfg, device):
                 logs["entropy_loss"].append(ent_loss.detach())
                 logs["zero_avoid_kl"].append(za.detach())
                 logs["loss"].append(loss.detach())
+                logs["grad_norm"].append(grad_norm.detach())
+                logs["grad_clipped"].append((grad_norm > cfg["max_grad_norm"]).float())
     model.eval()
     out = {k: float(torch.stack(v).mean()) for k, v in logs.items()}
     out["explained_variance"] = explained_variance(data["val"], data["ret"])
+    if use_aux:
+        for prefix, src in (("aux_acc_", acc), ("aux_base_", base_acc)):
+            for name, v in src.items():
+                c, n = torch.stack(v).sum(0).tolist()
+                out[prefix + name] = c / n if n else float("nan")
+                if prefix == "aux_acc_":
+                    out["aux_n_" + name] = n
+        del acc, base_acc
     del logs
     if device.type == "mps":
         torch.mps.empty_cache()
@@ -486,17 +603,22 @@ def ppo_update(model, optimizer, data, cfg, device):
 
 class Trainer:
     def __init__(self, cfg):
-        from networks.v20_policy import V20Net, DEFAULT_CONFIG
+        from networks import registry
         self.cfg = cfg
+        self.spec = registry.get(cfg["arch"])
         if cfg.get("net_config") is None:
-            cfg["net_config"] = dict(DEFAULT_CONFIG)
+            cfg["net_config"] = self.spec.default_net_config()
         if cfg.get("eval_port") is None:
             cfg["eval_port"] = cfg["base_port"] + cfg["n_servers"]
         self.p = paths(cfg)
         os.makedirs(cfg["model_dir"], exist_ok=True)
         os.makedirs(self.p["evals"], exist_ok=True)
         self.device = update_device(cfg)
-        self.model = V20Net(cfg["net_config"]).to(self.device)
+        self.model = self.spec.net(cfg["net_config"], self.spec.layout(cfg)).to(self.device)
+        self.baseline = None
+        if self.spec.has_labels:
+            from networks.v21_policy import AuxBaseline
+            self.baseline = AuxBaseline(self.model.layout)
         self.optimizer = torch.optim.Adam(
             [{"params": self.model.embedding_parameters(), "lr": cfg["lr_initial"] * cfg["embed_lr_mult"],
               "name": "embeddings"},
@@ -515,10 +637,12 @@ class Trainer:
 
     # ---- checkpoints ------------------------------------------------------------------------
     def save(self, path=None):
-        state = model_state(self.model, {
+        state = model_state(self.model, self.cfg["arch"], {
             "optimizer": self.optimizer.state_dict(), "config": self.cfg, "step": self.step,
             "games": self.games, "update": self.update_n, "eval_state": self.eval_state,
             "saved_at": datetime.now().isoformat()})
+        if self.baseline is not None:
+            state["aux_baseline"] = self.baseline.state_dict()
         path = path or self.p["latest"]
         tmp = path + ".tmp"
         torch.save(state, tmp)
@@ -528,6 +652,9 @@ class Trainer:
         if not os.path.exists(self.p["latest"]):
             return False
         ckpt = torch.load(self.p["latest"], map_location="cpu", weights_only=False)
+        if ckpt.get("arch", "v20") != self.cfg["arch"]:
+            raise SystemExit(f"{self.p['latest']} is a {ckpt.get('arch')!r} checkpoint, this run is "
+                             f"{self.cfg['arch']!r}: pass the matching --arch, or another --version")
         saved = ckpt.get("config", {})
         changed = {k: (saved.get(k), self.cfg.get(k)) for k in RESUME_CHECK_KEYS
                    if k in saved and saved.get(k) != self.cfg.get(k)}
@@ -542,6 +669,8 @@ class Trainer:
         self.optimizer.load_state_dict(ckpt["optimizer"])  # moves its state to the params' device
         self.step, self.games, self.update_n = ckpt["step"], ckpt["games"], ckpt["update"]
         self.eval_state = ckpt.get("eval_state", self.eval_state)
+        if self.baseline is not None and "aux_baseline" in ckpt:
+            self.baseline.load_state_dict(ckpt["aux_baseline"])
         print(f"Resumed {self.cfg['version']} at {self.step:,} steps, {self.games:,} games, "
               f"update {self.update_n}", flush=True)
         return True
@@ -614,7 +743,7 @@ class Trainer:
     def launch_eval(self, step):
         snap = os.path.join(self.p["evals"], f"step_{step:010d}.pt")
         if not os.path.exists(snap):
-            torch.save(model_state(self.model, {"step": step}), snap)
+            torch.save(model_state(self.model, self.cfg["arch"], {"step": step}), snap)
         if step not in self.eval_state["pending"]:
             self.eval_state["pending"].append(step)
         proc = self.ctx.Process(target=eval_main, daemon=True, name=f"v20-eval-{step}",
@@ -682,7 +811,7 @@ class Trainer:
         stop_at = cfg["stop_at"] or cfg["total_timesteps"]
         n_params = sum(p.numel() for p in self.model.parameters())
         print("=" * 70)
-        print(f"Future Sight {cfg['version']}: v20 network, {n_params:,} parameters")
+        print(f"Future Sight {cfg['version']}: {cfg['arch']} network, {n_params:,} parameters")
         print(f"  workers {cfg['n_workers']} on ports {cfg['base_port']}..{cfg['base_port'] + cfg['n_servers'] - 1}, "
               f"eval port {cfg['eval_port']}")
         print(f"  opponents: {cfg['opponents']} | steps/update {cfg['steps_per_update']:,} | "
@@ -692,6 +821,9 @@ class Trainer:
         print(f"  PPO: gamma {cfg['gamma']} lambda {cfg['gae_lambda']} clip {cfg['clip_range']} "
               f"vf-clip {cfg['clip_range_vf']} epochs {cfg['n_epochs']} batch {cfg['batch_size']} "
               f"ent {cfg['ent_coef']} vf {cfg['vf_coef']} zero-avoid {cfg['zero_avoid_coef']}")
+        if self.spec.has_labels:
+            print(f"  net {cfg['net_config']} | history {cfg['history_len']} | aux coefs "
+                  + " ".join(f"{h} {cfg[f'aux_{h}_coef']}" for h in AUX_HEADS))
         print("=" * 70, flush=True)
         # evals that were running when a previous run stopped
         for s in list(self.eval_state.get("pending", [])):
@@ -715,7 +847,9 @@ class Trainer:
                 n = len(data["act"])
                 t1 = time.time()
                 torch.set_num_threads(threads)
-                logs = ppo_update(self.model, self.optimizer, data, cfg, self.device)
+                logs = ppo_update(self.model, self.optimizer, data, cfg, self.device, self.baseline)
+                if self.baseline is not None:
+                    self.baseline.update(data["idx"], data["flt"], data["lab"])
                 update_s = time.time() - t1
                 prev = self.step
                 self.step += n
@@ -728,7 +862,7 @@ class Trainer:
                     self.save()
                     print(f">>> Checkpoint @ {self.step:,} steps", flush=True)
                 if cfg["opponents"] == "mix" and self.step // cfg["pool_save_freq"] > prev // cfg["pool_save_freq"]:
-                    path = self.pool.add(model_state(self.model, {"step": self.step}), self.step)
+                    path = self.pool.add(model_state(self.model, cfg["arch"], {"step": self.step}), self.step)
                     print(f"  -> pool snapshot {os.path.basename(path)} (pool: {len(self.pool.paths())})",
                           flush=True)
                 if cfg["eval_freq"] and self.step // cfg["eval_freq"] > prev // cfg["eval_freq"]:
@@ -741,7 +875,7 @@ class Trainer:
         self.save()
         if not interrupted:
             if self.step >= cfg["total_timesteps"]:
-                torch.save(model_state(self.model, {"step": self.step}), self.p["final"])
+                torch.save(model_state(self.model, cfg["arch"], {"step": self.step}), self.p["final"])
             if self.eval_procs:
                 print(">>> Waiting for running evals...", flush=True)
                 self.poll_evals(block=True)
@@ -803,6 +937,17 @@ class Trainer:
               f"ent {-logs['entropy_loss']:.3f} ev {logs['explained_variance']:.3f} "
               f"za {logs['zero_avoid_kl']:.3f} | win {wr:.1%} {dict(kinds)} | len {ep_len:.1f}{err}",
               flush=True)
+        if "aux_loss_next" in logs:
+            def acc(name):
+                return f"{logs.get('aux_acc_' + name, float('nan')):.2f}/{logs.get('aux_base_' + name, float('nan')):.2f}"
+            print("  aux | loss " + " ".join(f"{h} {logs['aux_loss_' + h]:.2f}" for h in AUX_HEADS)
+                  + f" | acc (model/base) next {acc('next')} kind {acc('next_kind')} | item {acc('item')}"
+                  f" ({acc('item_unrev')}) ability {acc('ability')} ({acc('ability_unrev')}) tera {acc('tera')}"
+                  f" ({acc('tera_unrev')}) moves {acc('moves')} ({acc('moves_unrev')}) [unrevealed in ()]"
+                  f" | grad ppo {logs['grad_norm_ppo']:.2f} aux {logs['grad_norm_aux']:.2f}"
+                  f" (cos {logs['grad_cos_ppo_aux']:.2f}) both {logs['grad_norm_measured']:.2f}"
+                  f" ppo kept {logs['grad_ppo_kept']:.2f} | all minibatches: mean {logs['grad_norm']:.2f}"
+                  f" clipped {logs['grad_clipped']:.0%}", flush=True)
 
 
 def _stop_on_sigterm(signum, frame):
@@ -812,8 +957,9 @@ def _stop_on_sigterm(signum, frame):
 def main():
     import signal
     signal.signal(signal.SIGTERM, _stop_on_sigterm)
-    ap = argparse.ArgumentParser(description="v20 PPO training")
-    ap.add_argument("--version", default=None)
+    ap = argparse.ArgumentParser(description="v20/v21 PPO training")
+    ap.add_argument("--version", default=None, help="run name (default: the arch)")
+    ap.add_argument("--arch", choices=["v20", "v21"], default=None)
     ap.add_argument("--timesteps", type=int, default=None, help="LR schedule horizon")
     ap.add_argument("--stop-at", type=int, default=None, help="stop after this many steps")
     ap.add_argument("--workers", type=int, default=None)
@@ -833,7 +979,7 @@ def main():
                          "--set clip_range_vf=None; a resumed run needs the same flags")
     args = ap.parse_args()
     cfg = dict(CONFIG)
-    for arg, key in (("version", "version"), ("timesteps", "total_timesteps"), ("stop_at", "stop_at"),
+    for arg, key in (("version", "version"), ("arch", "arch"), ("timesteps", "total_timesteps"), ("stop_at", "stop_at"),
                      ("workers", "n_workers"), ("servers", "n_servers"), ("base_port", "base_port"),
                      ("eval_port", "eval_port"), ("opponents", "opponents"),
                      ("steps_per_update", "steps_per_update"), ("eval_freq", "eval_freq"),
@@ -854,6 +1000,8 @@ def main():
             value = raw  # a plain string
         cfg[key] = value
         print(f"  --set {key} = {value!r}", flush=True)
+    if args.version is None and not any(item.startswith("version=") for item in args.set):
+        cfg["version"] = cfg["arch"]  # a v21 run never resumes v20's checkpoint by accident
     Trainer(cfg).train()
 
 

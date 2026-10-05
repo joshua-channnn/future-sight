@@ -1,5 +1,9 @@
 # Step 4 brief: attention over the battle tokens, battle history and auxiliary heads (v21)
 
+> **Status (October 5, 2026): built and run** (`v21.md`). v21 is level with v20 at equal steps
+> (48.1% ± 2.2% head-to-head at 10M, 80.6% vs 83.7% vs SimpleHeuristics): no gain. v20 stays the
+> best model. This brief stays the reference for how v21 was designed.
+
 For the agent that builds step 4 of `roadmap.md`. Written October 4, 2026, at the end of the
 session that ran v20's hyperparameter A/Bs and extended v20 to 20M steps. Everything here was
 measured in that session or in the v20 session unless it says otherwise.

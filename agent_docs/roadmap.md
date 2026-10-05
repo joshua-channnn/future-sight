@@ -1,6 +1,12 @@
 # Roadmap (from the September 2026 review)
 
 ## Where things stand
+- **Step 4 is done, with no gain** (`v21.md`). v21 (v20's tokens plus 16 battle-history tokens, a
+  3-layer d=128 transformer, auxiliary heads for the opponent's hidden set and next action), from
+  scratch with v20's settings, is level with v20 at equal steps: 48.1% ± 2.2% head-to-head vs v20
+  at 10M (2,000 games, both greedy), 80.6% ± 2.5% vs SimpleHeuristics (v20: 83.7%). It started
+  slower (34% vs 54% at 1M), the aux heads learned (all above per-species base rates), and each
+  update cost ~6x v20's on the Mac. v20 stays the best model.
 - **Step 3 is done: v20 is the best model** (`models/ppo_pokemon_6v6_v20.pt`; details in
   `v20.md`). Trained from scratch on the MacBook with v19's PPO settings. At 10M steps it won
   83.7% ± 2.3% of 1,000 games vs SimpleHeuristics, 73.9% ± 1.9% vs v19 and 62.8% ± 2.1% vs v18.3
@@ -91,11 +97,12 @@
    entropy bonus (0.02) and `gae_lambda` (0.95), and v20 extended to 20M. None raised v20's level;
    only training longer helped, a little (`v20.md`). The v20 tokens are the input step 4's
    attention trunk needs.
-4. Next; brief in `step4_brief.md`. Entity-token transformer (3-4 layers, d=128-192) over the
-   field, 6+6 Pokémon, 4 moves and the last 8-16 events from `battle.observations`. Auxiliary heads
-   for the opponent's next action and its hidden item, ability, moves and tera type; in self-play
-   the labels are free from `battle2`. On this Mac the transformer makes each PPO update roughly
-   6-8x longer (~1 minute instead of 7-10 s; `step4_brief.md` section 4.6).
+4. Done (October 2026; `v21.md`, brief in `step4_brief.md`), no gain. Entity-token transformer
+   (3 layers, d=128) over the field, 6+6 Pokémon, 4 moves and the last 16 events from
+   `battle.observations`, with auxiliary heads for the opponent's next action and its hidden item,
+   ability, moves and tera type (labels free from the other side's battle object). Level with v20
+   at 10M (48.1% ± 2.2% head-to-head); each PPO update ~60-80 s on the Mac instead of 7-12 s.
+   Not tried: A/Bs to find why (no aux heads, a v20-style context in the heads, half the LR).
 5. Scale out on a many-core cloud machine (~2 cores per env), with the PPO update on a GPU.
 6. Search last. It added about 100-150 Elo on top of Jaxcalibur's network.
 
