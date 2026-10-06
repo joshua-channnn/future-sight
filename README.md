@@ -19,8 +19,8 @@ v20 at 10M steps (the best model until October 2, 2026, still in git history) wo
 SimpleHeuristics, 73.9% vs v19 and 62.8% vs v18.3.
 
 v21 (v20 plus battle history, a transformer over the tokens and auxiliary prediction heads,
-October 2026) is level with v20 at equal steps: 48.1% ± 2.2% head-to-head at 10M steps, 80.6% ±
-2.5% vs SimpleHeuristics (`agent_docs/v21.md`).
+October 2026) is level with v20 at equal steps: 50.9% ± 2.2% head-to-head at 20M steps (48.1% at
+10M), 85.5% ± 2.2% vs SimpleHeuristics, 72.5% vs v19, 70.3% vs v18.3 (`agent_docs/v21.md`).
 
 The previous best, `models/ppo_pokemon_6v6_v18.3_best.zip`, wins 94.7% ± 1.4% vs RandomPlayer,
 67.9% ± 2.9% vs SimpleHeuristics and 60.4% ± 3.0% vs v17.3sp (1,000 games each). Earlier versions
