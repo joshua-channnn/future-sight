@@ -22,7 +22,9 @@ v21 (step 4: v20 plus battle history, a transformer and auxiliary heads; level w
 in `agent_docs/v21.md`):
 - `envs/rl_player_v21.py`: `Featurizer` (v20's observation plus 16 history tokens), the aux labels
   (`set_labels`, `next_action_label`, read from the other side's battle object).
-- `networks/v21_policy.py`: `V21Net`, the aux losses and metrics, per-species base rates.
+- `networks/v21_policy.py`: `V21Net` (net_config `head_context`: v20's context vector in the
+  heads, off by default), the aux losses and metrics, per-species base rates. A partial
+  `--set "net_config={...}"` is merged into the arch's defaults.
 - `networks/registry.py`: arch name (`v20`, `v21`) -> featurizer, network, layout. Checkpoints
   store their arch; `V20Policy.load` and everything that loads models route through it.
 - Trained by `training/ppo_v20.py --arch v21`; checks `tools/check_v21_env.py`,

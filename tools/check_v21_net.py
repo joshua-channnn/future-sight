@@ -11,6 +11,7 @@ Collects real samples (with labels) through a v21 training Worker on a local Sho
      included) on the update device at the real rollout size, with MPS memory after each.
 
     python3 -m tools.check_v21_net --port 8123
+    python3 -m tools.check_v21_net --port 8123 --net-config "{'head_context': True}"
 """
 import argparse
 import os
@@ -35,6 +36,7 @@ def main():
     ap.add_argument("--port", type=int, default=8123)
     ap.add_argument("--samples", type=int, default=1200)
     ap.add_argument("--updates", type=int, default=2)
+    ap.add_argument("--net-config", default="{}", help="dict merged into V21Net's DEFAULT_CONFIG")
     args = ap.parse_args()
     bad = []
 
@@ -45,7 +47,9 @@ def main():
 
     cfg = dict(CONFIG, arch="v21", base_port=args.port, n_servers=1, net_config=None)
     spec = registry.get("v21")
-    cfg["net_config"] = spec.default_net_config()
+    import ast
+    cfg["net_config"] = {**spec.default_net_config(), **ast.literal_eval(args.net_config)}
+    print("net_config", cfg["net_config"])
     layout = spec.layout(cfg)
     t0 = time.time()
     w = Worker(0, cfg)

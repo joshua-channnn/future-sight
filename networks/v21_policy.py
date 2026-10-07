@@ -12,7 +12,11 @@ Input is the flat (idx, flt, mask) triple from envs.rl_player_v21.Featurizer: v2
     always attend, so no attention row is empty. Unrevealed opponent placeholders stay visible:
     their number is information,
   - scores each move token twice (use, Terastallize + use) and each own Pokemon token once (switch
-    to that team slot) from [token output, CLS output]; the value comes from the CLS output,
+    to that team slot) from [token output, CLS output]; the value comes from the CLS output. With
+    net_config "head_context" (off by default, so v21 checkpoints load as they were) the heads also
+    get v20's context vector, built from the trunk's outputs: field, both actives, mean and max over
+    each team -> LayerNorm -> MLP. At init the CLS output barely depends on the state; this
+    context does from the first step,
   - auxiliary heads (training signal only): item, base ability, tera type and moves of each
     opponent token; the opponent's next action from CLS (moves and tera moves by vocab index) plus
     one pointer logit per opponent token (switch to it). Labels: envs.rl_player_v21.
@@ -105,9 +109,19 @@ class V21Net(nn.Module):
                                      for _ in range(cfg["n_layers"])])
         self.norm = nn.LayerNorm(d)
 
-        self.move_head = _mlp([2 * d, hh, 2], final_relu=False)
-        self.switch_head = _mlp([2 * d, hh, 1], final_relu=False)
-        self.value_head = _mlp([d, hh, 1], final_relu=False)
+        # head_context isn't in DEFAULT_CONFIG: v21 checkpoints (and resuming the v21 run, which
+        # compares net_config) keep their config
+        self.head_context = bool(cfg.get("head_context", False))
+        self.pk_active = L["pk_active"]
+        g = d
+        if self.head_context:
+            ctx = cfg.get("ctx", 256)
+            self.ctx_norm = nn.LayerNorm(7 * d)
+            self.ctx_mlp = _mlp([7 * d, 512, ctx])
+            g = d + ctx
+        self.move_head = _mlp([d + g, hh, 2], final_relu=False)
+        self.switch_head = _mlp([d + g, hh, 1], final_relu=False)
+        self.value_head = _mlp([g, hh, 1], final_relu=False)
         self.aux_item = nn.Linear(d, V["item"])
         self.aux_ability = nn.Linear(d, V["ability"])
         self.aux_tera = nn.Linear(d, V["type"])
@@ -193,11 +207,18 @@ class V21Net(nn.Module):
         B = x.shape[0]
         cls = x[:, -1]
         own, opp, mv = x[:, :6], x[:, 6:12], x[:, 12:12 + self.n_mv]
-        move_logits = self.move_head(torch.cat([mv, cls.unsqueeze(1).expand(B, self.n_mv, -1)], -1))
-        switch_logits = self.switch_head(torch.cat([own, cls.unsqueeze(1).expand(B, 6, -1)], -1)).squeeze(-1)
+        g = cls
+        if self.head_context:
+            active = flt[:, :FLT_PK_END].view(B, self.n_pk, self.n_pk_flt)[..., self.pk_active:self.pk_active + 1]
+            ctx = self.ctx_mlp(self.ctx_norm(torch.cat([
+                x[:, 12 + self.n_mv], (own * active[:, :6]).sum(1), (opp * active[:, 6:]).sum(1),
+                own.mean(1), own.max(1).values, opp.mean(1), opp.max(1).values], dim=-1)))
+            g = torch.cat([cls, ctx], -1)
+        move_logits = self.move_head(torch.cat([mv, g.unsqueeze(1).expand(B, self.n_mv, -1)], -1))
+        switch_logits = self.switch_head(torch.cat([own, g.unsqueeze(1).expand(B, 6, -1)], -1)).squeeze(-1)
         logits = torch.cat([move_logits[..., 0], move_logits[..., 1], switch_logits], dim=-1)
         logits = torch.where(mask, logits, torch.full_like(logits, MASK_VALUE))
-        value = self.value_head(cls).squeeze(-1)
+        value = self.value_head(g).squeeze(-1)
         if not aux:
             return logits, value
         out = {"item": self.aux_item(opp), "ability": self.aux_ability(opp), "tera": self.aux_tera(opp),

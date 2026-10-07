@@ -103,8 +103,9 @@
    `battle.observations`, with auxiliary heads for the opponent's next action and its hidden item,
    ability, moves and tera type (labels free from the other side's battle object). Level with v20
    at 10M (48.1% ± 2.2% head-to-head) and at 20M (50.9% ± 2.2%); each PPO update ~60-95 s on the
-   Mac instead of 7-12 s.
-   Not tried: A/Bs to find why (no aux heads, a v20-style context in the heads, half the LR).
+   Mac instead of 7-12 s. A/Bs of v21 at 5M: v20's context vector in the heads +3 points vs v21
+   (level with v20), no aux losses level (after a 1.2M-step stall), half the LR clearly worse
+   (43% vs v21) despite a v20-like start. Nothing got past v20.
 5. Scale out on a many-core cloud machine (~2 cores per env), with the PPO update on a GPU.
 6. Search last. It added about 100-150 Elo on top of Jaxcalibur's network.
 

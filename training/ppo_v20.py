@@ -105,7 +105,7 @@ CONFIG = {
     "save_freq": 200_000,
 
     "allow_config_change": False,    # resume even if the settings below differ from the checkpoint's
-    "net_config": None,              # the arch's DEFAULT_CONFIG (networks/v2x_policy.py) when None
+    "net_config": None,              # merged into the arch's DEFAULT_CONFIG (networks/v2x_policy.py)
     "model_dir": "models",
     "log_dir": "logs",
     "data_dir": "data",
@@ -492,7 +492,9 @@ def ppo_update(model, optimizer, data, cfg, device, baseline=None):
     old_val = torch.as_tensor(data["val"])
     advs = torch.as_tensor(data["adv"])
     rets = torch.as_tensor(data["ret"])
-    use_aux = "lab" in data and getattr(model, "has_aux", False)
+    # with every aux coefficient at 0 the aux heads are skipped entirely (the no-aux A/B)
+    use_aux = ("lab" in data and getattr(model, "has_aux", False)
+               and any(cfg[f"aux_{h}_coef"] for h in AUX_HEADS))
     if use_aux:
         from networks.v21_policy import aux_obs, aux_terms
         lab = torch.as_tensor(data["lab"])  # int16
@@ -606,8 +608,8 @@ class Trainer:
         from networks import registry
         self.cfg = cfg
         self.spec = registry.get(cfg["arch"])
-        if cfg.get("net_config") is None:
-            cfg["net_config"] = self.spec.default_net_config()
+        # a partial --set net_config (e.g. "{'head_context': True}") is merged into the arch's defaults
+        cfg["net_config"] = {**self.spec.default_net_config(), **(cfg.get("net_config") or {})}
         if cfg.get("eval_port") is None:
             cfg["eval_port"] = cfg["base_port"] + cfg["n_servers"]
         self.p = paths(cfg)
