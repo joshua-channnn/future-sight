@@ -19,7 +19,8 @@ Snow -> Snowscape rename in fp/battle/protocol.py.
    --search-parallelism for a stronger (slower) opponent.
 4. From pokemon-rl/:
      python -m eval.foulplay_eval --games 100 --port 8005 --opponent FoulPlayLocal7291
-   --model takes a v20 checkpoint (.pt, the default) or an SB3 zip (v17-v19).
+   --model takes a v20 checkpoint (.pt, the default), an SB3 zip (v17-v19), or "search" for the
+   search bot (search/policy.py; --samples / --ms set its budget, Foul Play's default by default).
 """
 import argparse
 import asyncio
@@ -32,6 +33,7 @@ from poke_env.ps_client.server_configuration import ServerConfiguration
 
 from players.ppo_player import PPOPlayer
 from players.v20_player import V20Player
+from search.policy import SearchPlayer, SearchPolicy
 
 
 async def wait_for_battles(player, n_finished, timeout):
@@ -52,6 +54,11 @@ async def main():
                         help="The --ps-username Foul Play was started with")
     parser.add_argument("--game-timeout", type=int, default=600,
                         help="Seconds to wait for one game before giving up")
+    parser.add_argument("--samples", type=int, default=2, help="search bot: sampled teams per decision")
+    parser.add_argument("--ms", type=int, default=100, help="search bot: MCTS time per sample")
+    parser.add_argument("--early-samples", type=int, default=4)
+    parser.add_argument("--early-ms", type=int, default=50)
+    parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
 
     common = dict(
@@ -63,7 +70,11 @@ async def main():
         ),
         max_concurrent_battles=1,
     )
-    if args.model.endswith(".pt"):
+    if args.model == "search":
+        policy = SearchPolicy(samples=args.samples, ms=args.ms, early_samples=args.early_samples,
+                              early_ms=args.early_ms, seed=args.seed)
+        player = SearchPlayer(policy=policy, hold_requests=True, **common)
+    elif args.model.endswith(".pt"):
         # this local Showdown fork sends each request before the turn's log
         player = V20Player(model_path=args.model, deterministic=True, hold_requests=True, **common)
     else:
@@ -79,13 +90,15 @@ async def main():
                   f"(is Foul Play still running?); stopping early.")
             break
         if game % 10 == 0:
-            print(f"  {game}/{args.games}: {player.n_won_battles} wins")
+            print(f"  {game}/{args.games}: {player.n_won_battles} wins", flush=True)
         await asyncio.sleep(2)  # let Foul Play get back to waiting for challenges
 
     n, wins = player.n_finished_battles, player.n_won_battles
     p = wins / max(n, 1)
     ci = 1.96 * np.sqrt(p * (1 - p) / max(n, 1))
     print(f"vs Foul Play: {wins}/{n} wins = {p:.1%} (95% CI ±{ci:.1%})")
+    if args.model == "search":
+        print("search:", player.policy.report())
 
 
 if __name__ == "__main__":

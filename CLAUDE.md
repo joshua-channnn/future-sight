@@ -31,6 +31,20 @@ in `agent_docs/v21.md`):
   `tools/check_v21_net.py`, `tools/check_v20_selfplay.py --arch v21`,
   `ARCH=v21 bash tools/check_v20_resume.sh`.
 
+Step 6 (search at decision time, details in `agent_docs/step6.md`):
+- `search/sampling.py`: the set prior (`data/gen9_randbats_set_counts.json`: complete sets of the
+  fork's generator over 1M teams, built by `tools/build_set_prior.py`) and opponent team sampling.
+- `search/state.py`: poke-env battle -> poke-engine `State` (`build_state`, `build_true_state` for
+  checks, `LogTracker` for what poke-env doesn't keep), engine options -> our 14 actions.
+- `search/policy.py`: `SearchPolicy` (MCTS over sampled opponent teams, Foul Play's recipe; same
+  interface as `V20Policy`), `SearchPlayer` (live play). `search/net.py`: v21 in the loop (Phase 2).
+- poke-engine is 0.0.48 built with gen9 + Terastallization and one added binding
+  (`search/engine_patch/`, `bash search/engine_patch/build.sh`); `pip install poke-engine==0.0.46`
+  undoes it.
+- Evals: `python3 -m eval.search_eval --opponents simple|model|search ...`,
+  `python3 -m eval.foulplay_eval --model search ...`. Checks: `tools/check_engine_build.py`,
+  `tools/check_set_prior.py`, `tools/check_search_state.py`, `tools/check_set_model.py`.
+
 v17-v19 (SB3):
 - `envs/rl_player_6v6_v18.py`: the environment. Observation (677 floats: 12 Pokémon blocks,
   active-move details, global features), reward (`reward_mode`: `sparse` or `shaped`), action
@@ -95,5 +109,5 @@ v17-v19 (SB3):
   gain): `agent_docs/v21.md`; the brief it was built from: `agent_docs/step4_brief.md`
 - the v20 A/Bs and how runs are started, monitored and judged on this Mac:
   `agent_docs/step4_handoff.md`
-- building step 6 (search at decision time on poke-engine, the network as prior and opponent
-  model), the next job: `agent_docs/step6_brief.md`
+- step 6 (search at decision time on poke-engine, the network as prior, set model and opponent
+  model): `agent_docs/step6.md`; the brief it was built from: `agent_docs/step6_brief.md`

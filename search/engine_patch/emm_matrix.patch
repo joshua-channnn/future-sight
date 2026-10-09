@@ -1,0 +1,49 @@
+--- a/poke-engine-py/src/lib.rs	2026-07-19 10:33:44
++++ b/poke-engine-py/src/lib.rs	2026-10-09 02:11:15
+@@ -14,7 +14,8 @@
+ use poke_engine::mcts::{perform_mcts, MctsResult, MctsSideResult};
+ use poke_engine::mcts_threaded::perform_mcts_shared_tree;
+ use poke_engine::pokemon::PokemonName;
+-use poke_engine::search::iterative_deepen_expectiminimax;
++use poke_engine::search::{expectiminimax_search, iterative_deepen_expectiminimax};
++use std::sync::{Arc, Mutex};
+ use poke_engine::state::{
+     LastUsedMove, Move, Pokemon, PokemonIndex, PokemonMoves, PokemonNature, PokemonStatus,
+     PokemonType, Side, SideConditions, SidePokemon, State, StateTerrain, StateTrickRoom,
+@@ -961,6 +962,28 @@
+     let py_id_result =
+         PyIterativeDeepeningResult::from_iterative_deepening_result(id_result, &state);
+     Ok(py_id_result)
++}
++
++/// The root payoff matrix of a fixed-depth expectiminimax search, every cell evaluated
++/// (`ab_prune` false; the subgames below the root still use the engine's pruned search).
++/// Added for search at decision time with an opponent model (pokemon-rl, step 6).
++#[pyfunction]
++fn emm_matrix(py_state: PyState, depth: i8, ab_prune: bool) -> PyResult<PyIterativeDeepeningResult> {
++    let mut state: State = py_state.into();
++    let (s1_options, s2_options) = state.root_get_all_options();
++    let running = Arc::new(Mutex::new(true));
++    let matrix = expectiminimax_search(
++        &mut state,
++        depth,
++        s1_options.clone(),
++        s2_options.clone(),
++        ab_prune,
++        &running,
++    );
++    Ok(PyIterativeDeepeningResult::from_iterative_deepening_result(
++        (s1_options, s2_options, matrix, depth),
++        &state,
++    ))
+ }
+ 
+ #[derive(Clone)]
+@@ -1129,6 +1152,7 @@
+     m.add_function(wrap_pyfunction!(calculate_damage, m)?)?;
+     m.add_function(wrap_pyfunction!(generate_instructions, m)?)?;
+     m.add_function(wrap_pyfunction!(id, m)?)?;
++    m.add_function(wrap_pyfunction!(emm_matrix, m)?)?;
+     m.add_function(wrap_pyfunction!(mcts, m)?)?;
+     m.add_class::<PyState>()?;
+     m.add_class::<PySide>()?;

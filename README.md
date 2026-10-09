@@ -4,6 +4,16 @@ A reinforcement learning bot for Gen 9 Random Battles on [Pokemon Showdown](http
 
 ## Performance
 
+The search bot (`search/policy.py`, step 6: poke-engine MCTS over opponent teams sampled from the
+fork's own random-battle generator, Foul Play's recipe in our own code; `agent_docs/step6.md`), at
+Foul Play's default budget (~200 ms per decision), counting actual wins:
+
+| Opponent | Games | Win Rate (95% CI) |
+|----------|-------|-------------------|
+| Foul Play (local, default search) | 500 | 47.4% ± 4.4% |
+| v20 at 20M steps (greedy), both seats | 2,000 | 80.0% ± 1.8% |
+| SimpleHeuristics | 1,000 | 91.5% ± 1.7% |
+
 `models/ppo_pokemon_6v6_v20.pt` (v20, 20M steps from scratch), counting actual wins (`battle.won`):
 
 | Opponent | Games | Win Rate (95% CI) |
