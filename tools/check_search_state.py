@@ -75,6 +75,16 @@ def compare_observer(chk, obs_state, obs_info, true_state, true_info, battle, se
             continue
         pt = t2.pokemon[j]
         mon = opp[key]
+        # item inference (search.state.LogTracker): ruled-out items and inferred Boots vs the truth
+        tm = tracker(battle).mons.get(key)
+        orig = (tracker(battle).mons.get(key).orig_item if tm else None)
+        true_item = pt.item.lower()
+        if tm is not None and not tm.traded and not tm.item_consumed and mon.item == "unknown_item":
+            for it in tm.no_items:
+                chk.eq("infer: ruled-out item isn't the true item", it != true_item, (key, it, true_item))
+            if tm.boots:
+                chk.eq("infer: no Stealth Rock damage -> Boots or Magic Guard",
+                       true_item == "heavydutyboots" or pt.ability.lower() == "magicguard", (key, true_item, pt.ability))
         chk.eq("obs: species / forme", po.id.lower() == pt.id.lower(), (key, po.id, pt.id))
         chk.eq("obs: level", po.level == pt.level, (key, po.level, pt.level))
         fo = po.hp / max(po.maxhp, 1)
@@ -122,6 +132,23 @@ def compare_observer(chk, obs_state, obs_info, true_state, true_info, battle, se
     ko, kt = obs_info["keys2"][ao], true_info["keys2"][at]
     chk.eq("obs: opponent active", ko == kt, (ko, kt))
     if ko == kt and t2.pokemon[at].hp > 0:
+        # choice lock: when the opponent's active really holds a Choice item, are the same moves
+        # locked out (the observer's depends on whether its sampled item is a Choice item too)
+        if t2.pokemon[at].item.lower() in ("choiceband", "choicespecs", "choicescarf"):
+            t_dis = {m.id.lower() for m in t2.pokemon[at].moves if m.disabled}
+            o_dis = {m.id.lower() for m in o2.pokemon[ao].moves if m.disabled}
+            if t_dis:
+                chk.c["choice-locked opponent (true): observer locks the same moves"] += o_dis == t_dis
+                chk.c["choice-locked opponent (true): observer locks nothing"] += not o_dis
+                chk.c["choice-locked opponent (true): count"] += 1
+            else:
+                chk.c["unlocked Choice holder (true): observer locks moves anyway"] += bool(o_dis)
+                chk.c["unlocked Choice holder (true): count"] += 1
+        else:
+            o_dis = {m.id.lower() for m in o2.pokemon[ao].moves if m.disabled}
+            t_dis = {m.id.lower() for m in t2.pokemon[at].moves if m.disabled}
+            chk.c["no Choice item (true): observer locks moves (false lock)"] += bool(o_dis - t_dis)
+            chk.c["no Choice item (true): count"] += 1
         for b in BOOSTS + ("accuracy_boost", "evasion_boost"):
             chk.eq("obs: active boosts", getattr(o2, b) == getattr(t2, b), (b, getattr(o2, b), getattr(t2, b)))
         vo = {v.lower() for v in o2.volatile_statuses}
@@ -360,8 +387,8 @@ def main():
                 acts[agent] = order
                 if true_now is not None:
                     o = order_to_option(order, b, true_now, "one" if side == 1 else "two")
-                    if o is not None and (o in ("struggle", "recharge") or
-                                          (b.active_pokemon is not None and b.active_pokemon.must_recharge)):
+                    req_ids = [m_.get("id") for m_ in (((b.last_request or {}).get("active") or [{}])[0]).get("moves", [])]
+                    if o is not None and (o in ("struggle", "recharge") or req_ids == ["recharge"]):
                         o = "none"
                     opts[side] = o
             # what each side does this step in the engine: its choice now, a choice from earlier this

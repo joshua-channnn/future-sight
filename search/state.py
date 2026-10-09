@@ -104,7 +104,7 @@ class _Mon:
     __slots__ = ("forme", "switch_turn", "after_upkeep", "last_move", "last_move_turn", "moves_since_in",
                  "pp_used", "sub_hit", "tox_ticks", "rest", "sleep_attempts", "taunt_start",
                  "encore_start", "yawn_turn", "lock_move", "lock_turn", "disabled_move", "orig_item",
-                 "traded", "item_consumed", "prepare", "no_items", "stint_moves")
+                 "traded", "item_consumed", "prepare", "no_items", "stint_moves", "recharge", "boots")
 
     def __init__(self):
         self.forme = None
@@ -130,6 +130,8 @@ class _Mon:
         self.prepare = None           # (move id, turn) of a charge turn (-prepare) not yet released
         self.no_items = set()         # items its original item can't be, from what it did with it
         self.stint_moves = set()      # moves it chose itself this stint (not called by another move)
+        self.recharge = False         # -mustrecharge, not yet used up by a turn it couldn't move
+        self.boots = False            # switched into Stealth Rock without damage: Boots (or Magic Guard)
 
 
 class LogTracker:
@@ -153,6 +155,8 @@ class LogTracker:
         self.trick_pair = None
         self.pressure = {}            # side -> its active announced Pressure
         self.tera_user = {}           # side -> (key, tera type) of the Pokemon that terastallized
+        self.rocks = {}               # side -> Stealth Rock is up
+        self.rock_check = None        # key of a Pokemon that just switched into Stealth Rock
 
     def mon(self, key):
         m = self.mons.get(key)
@@ -180,6 +184,17 @@ class LogTracker:
         if len(ev) < 2:
             return
         kind = ev[1]
+        if self.rock_check is not None:
+            # hazard damage follows the switch line directly; anything else ends the switch-in
+            if kind == "-damage" and len(ev) > 4 and _key(ev[2]) == self.rock_check and \
+                    "Stealth Rock" in ev[4]:
+                self.rock_check = None
+            elif kind not in ("-damage", "-status", "-activate", "-unboost", "-boost") or \
+                    (len(ev) > 2 and ev[2].startswith(("p1", "p2")) and _key(ev[2]) != self.rock_check):
+                m = self.mon(self.rock_check)
+                if not (m.traded or m.item_consumed):
+                    m.boots = True
+                self.rock_check = None
         if kind == "upkeep":
             self.turn_after_upkeep = True
             return
@@ -203,9 +218,12 @@ class LogTracker:
                 m.disabled_move = None
                 m.prepare = None
                 m.stint_moves = set()
+                m.recharge = False
                 self.pressure[key[:2]] = False
                 if kind == "switch" and not self.turn_after_upkeep:
                     self.acted[key[:2]] = turn
+                if self.rocks.get(key[:2]) and not m.boots:
+                    self.rock_check = key
         elif kind == "detailschange" and len(ev) > 3:
             self.mon(_key(ev[2])).forme = _species_of(ev[3])
         elif kind == "-formechange" and len(ev) > 3:
@@ -215,6 +233,7 @@ class LogTracker:
             m = self.mon(key)
             mid = to_id_str(ev[3])
             m.prepare = None
+            m.recharge = False
             self.last_mover = key
             self.acted[key[:2]] = turn
             called = "from" in tags   # called by another move or a locked-in continuation
@@ -258,6 +277,9 @@ class LogTracker:
                 m.sleep_attempts += 1
             m.lock_move = m.lock_turn = None
             m.prepare = None
+            m.recharge = False   # the recharge turn, or one it couldn't move anyway (Truant)
+        elif kind == "-mustrecharge" and len(ev) > 2:
+            self.mon(_key(ev[2])).recharge = True
         elif kind == "-status" and len(ev) > 3:
             m = self.mon(_key(ev[2]))
             if ev[3] == "slp":
@@ -377,6 +399,13 @@ class LogTracker:
         elif kind == "-sidestart" and len(ev) > 3:
             cond = SideCondition.from_showdown_message(ev[3])
             self.side_setters[(ev[2][:2], cond)] = self.last_mover
+            if cond is SideCondition.STEALTH_ROCK:
+                self.rocks[ev[2][:2]] = True
+        elif kind == "-sideend" and len(ev) > 3:
+            if SideCondition.from_showdown_message(ev[3]) is SideCondition.STEALTH_ROCK:
+                self.rocks[ev[2][:2]] = False
+        elif kind == "-swapsideconditions":
+            self.rocks["p1"], self.rocks["p2"] = self.rocks.get("p2", False), self.rocks.get("p1", False)
         elif kind == "-terastallize" and len(ev) > 3:
             key = _key(ev[2])
             self.tera_user[key[:2]] = (key, to_id_str(ev[3]))
@@ -468,7 +497,8 @@ class _SideBuilder:
             passed = self.turn - m.switch_turn - (1 if m.after_upkeep or m.switch_turn == 0 else 0)
             vols.add("slowstart")
             dur["slowstart"] = max(1, 5 - passed)
-        if mon.must_recharge:
+        # poke-env's must_recharge can stay set when the recharge turn was skipped (Truant)
+        if (request_moves == ["recharge"]) if request_moves is not None else m.recharge:
             vols.add("mustrecharge")
         if m.prepare is not None and m.prepare[0] in CHARGE_MOVES and m.prepare[0] in moves and \
                 (request_moves is None or request_moves == [m.prepare[0]]):
@@ -664,9 +694,11 @@ class StateBuilder:
         return kw, keys, items.get
 
     # ---- opponent side from observations ------------------------------------------------------
-    def observed_side(self, sets):
+    def observed_side(self, sets, lock_choice=True):
         """(Side kwargs, keys, item_of) for the opponent of self.battle: revealed Pokemon from the log
-        plus `sets` (RandSet per opponent_team entry in order, then the unrevealed ones)."""
+        plus `sets` (RandSet per opponent_team entry in order, then the unrevealed ones).
+        lock_choice: an active holding a Choice item (shown or sampled) that has used one move since
+        it switched in can only use that move (as Foul Play locks it)."""
         battle = self.battle
         tr = self.tr
         sb = _SideBuilder(battle, tr, self.opp_role)
@@ -721,6 +753,11 @@ class StateBuilder:
                     types = (tt[0], tt[1] if len(tt) > 1 else "typeless") if tt else types
                 status = None if mon.fainted else mon.status
                 rest_turns, sleep_turns = sb.sleep(mon, key) if status is Status.SLP else (0, 0)
+                locked_out = set()
+                if lock_choice and is_active and item in CHOICE_ITEMS:
+                    used = {mv for mv, _ in m.moves_since_in}
+                    if len(used) == 1 and next(iter(used)) in move_ids:
+                        locked_out = {mv for mv in move_ids if mv not in used}
                 pokemon.append(pe.Pokemon(
                     id=species, level=mon.level, types=types, base_types=_types(species), hp=hp,
                     maxhp=maxhp, ability=ability, base_ability=s.ability or ability, item=item,
@@ -728,7 +765,8 @@ class StateBuilder:
                     special_attack=stats["spa"], special_defense=stats["spd"], speed=stats["spe"],
                     status=STATUS.get(status, "none"), rest_turns=rest_turns, sleep_turns=sleep_turns,
                     weight_kg=float(POKEDEX[species].get("weightkg", 1.0)),
-                    moves=[pe.Move(id=mv, pp=min(sb.pp(key, mv), 127)) for mv in move_ids],
+                    moves=[pe.Move(id=mv, pp=min(sb.pp(key, mv), 127), disabled=mv in locked_out)
+                           for mv in move_ids],
                     terastallized=bool(mon.is_terastallized), tera_type=tera or "typeless"))
                 keys.append(key)
             else:
@@ -782,6 +820,8 @@ class StateBuilder:
                 act = ((battle.last_request or {}).get("active") or [None])[0]
                 request_moves = [x.get("id") for x in act.get("moves", [])] if act else []
             vols, dur, sub, last, locked, disabled = sb.active_volatiles(mon, key, active_moves, request_moves)
+            if locked and not own:
+                disabled |= {mv for mv in active_moves if mv != locked}
             if disabled:
                 p = pokemon[active_index]
                 pokemon[active_index] = _with_moves(p, [pe.Move(id=m.id.lower(), pp=m.pp,
@@ -892,12 +932,12 @@ def _with_moves(p, moves, **changes):
     return pe.Pokemon(**kw)
 
 
-def build_state(battle, opp_sets):
+def build_state(battle, opp_sets, lock_choice=True):
     """(State, info) from battle's player's point of view, the opponent's unknowns from opp_sets.
-    info: own and opponent keys in engine order."""
+    info: own and opponent keys in engine order. lock_choice: see StateBuilder.observed_side."""
     b = StateBuilder(battle)
     s1, keys1, item1 = b.own_side()
-    s2, keys2, item2 = b.observed_side(opp_sets)
+    s2, keys2, item2 = b.observed_side(opp_sets, lock_choice)
 
     def item_of(key):
         return item1(key) or item2(key)

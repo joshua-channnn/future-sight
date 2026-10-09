@@ -166,13 +166,14 @@ class SetPrior:
 
     # ---- sets ----------------------------------------------------------------------------------
     def candidates(self, key, level=None, moves=(), item=None, ability=None, tera=None, lead=False,
-                   no_items=frozenset()):
+                   no_items=frozenset(), boots=False):
         """The sets of `key` consistent with what the Pokemon has shown, and their weights.
 
         moves: move ids it has used; item / ability: its original item ('' = none) and ability, None
         if not known; tera: its tera type if it has terastallized; lead: it was its team's first
         Pokemon (weights from lead counts); no_items: items its original item can't be (from what it
-        did, search.state.LogTracker). When no set fits everything, constraints are dropped in
+        did, search.state.LogTracker); boots: it switched into Stealth Rock without damage (Heavy-Duty
+        Boots or Magic Guard). When no set fits everything, constraints are dropped in
         order (item, ability, tera, then sets with the most of the shown moves), so a wrong
         observation (a move called by another move, a traded item) can't leave nothing to sample.
         Returns (sets, weights, relaxed) where relaxed counts the constraints dropped (0 = none).
@@ -194,7 +195,9 @@ class SetPrior:
                     (("tera", tera),),
                     ())):
                 ok = [i for i in full if all(v is None or getattr(sets[i], f) == v for f, v in checks)
-                      and (n_drop > 0 or sets[i].item not in no_items)]
+                      and (n_drop > 0 or (sets[i].item not in no_items and
+                                          (not boots or sets[i].item == "heavydutyboots" or
+                                           sets[i].ability == "magicguard")))]
                 if ok:
                     chosen, relaxed = ok, n_drop
                     break
@@ -256,7 +259,8 @@ def observations(battle, tr, infer_items=False):
     battle.opponent_team order: dicts of candidates() arguments plus its species.
     tr: the battle's search.state.LogTracker (current forme, original item). infer_items: also the
     items ruled out by what it did (two moves in a stint: no Choice item; a status move: no Assault
-    Vest; hazard damage: no Heavy-Duty Boots), as Foul Play does."""
+    Vest; hazard damage: no Heavy-Duty Boots; no Stealth Rock damage: Boots or Magic Guard), as Foul
+    Play does."""
     out = []
     for j, (key, mon) in enumerate(list(battle.opponent_team.items())[:6]):
         m = tr.mons.get(key)
@@ -264,8 +268,9 @@ def observations(battle, tr, infer_items=False):
         tera = mon.tera_type.name.lower() if mon.is_terastallized and mon.tera_type is not None else None
         item = m.orig_item if m is not None and not m.traded else None
         no_items = frozenset(m.no_items) if infer_items and m is not None else frozenset()
+        boots = bool(infer_items and m is not None and m.boots and item is None)
         out.append(dict(species=species, level=mon.level, moves=tuple(mon.moves), item=item,
-                        ability=mon.ability, tera=tera, lead=j == 0, no_items=no_items))
+                        ability=mon.ability, tera=tera, lead=j == 0, no_items=no_items, boots=boots))
     return out
 
 
@@ -281,7 +286,7 @@ def sample_opponent(prior, obs, rng, weight_fn=None):
         cands, weights, n_relaxed = [], [], 0
         for k in keys:
             c, w, r = prior.candidates(k, o["level"], o["moves"], o["item"], o["ability"], o["tera"],
-                                       o["lead"], o.get("no_items", frozenset()))
+                                       o["lead"], o.get("no_items", frozenset()), o.get("boots", False))
             if c and (not cands or r < n_relaxed):
                 cands, weights, n_relaxed = c, w, r
             elif c and r == n_relaxed:

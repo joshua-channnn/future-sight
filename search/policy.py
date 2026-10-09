@@ -27,13 +27,16 @@ from search.state import build_state, option_to_action, tracker
 class SearchPolicy:
     def __init__(self, samples=2, ms=100, early_samples=4, early_ms=50, threads=1, near_best=0.75,
                  deterministic=False, seed=None, iterations=0, iters_per_ms=0.0, net=None, prior_weight=0.0,
-                 set_gamma=0.0, infer_items=False, algo="mcts", emm_depth=2, emm_samples=8, worst_weight=1.0):
+                 set_gamma=0.0, infer_items=False, algo="mcts", emm_depth=2, emm_samples=8, worst_weight=1.0,
+                 lock_choice=True):
         """samples x ms: the budget per decision (early_samples x early_ms early in the game, as
         Foul Play). near_best: pick among options with at least this share of the best one's
         visits (Foul Play: 0.75); deterministic: always the best. iterations > 0 replaces the time
         budget with a fixed number of MCTS iterations per sample (reproducible tests); iters_per_ms > 0
         with iters_per_ms * ms iterations (a budget that doesn't depend on the machine's load, for
-        head-to-heads between search bots).
+        head-to-heads between search bots). lock_choice: the opponent's active is choice-locked
+        into the one move it used this stint when its item (shown or sampled) is a Choice item
+        (search.state.StateBuilder.observed_side; off reproduces the first Phase 1 bot).
 
         Phase 2 (the v21 network, `net`: a search.net.NetModel):
           prior_weight (a): choose by visit share + prior_weight * the network's action probability.
@@ -59,7 +62,9 @@ class SearchPolicy:
         self.deterministic = deterministic
         self.iterations = iterations
         self.iters_per_ms = iters_per_ms
+        self.lock_choice = lock_choice
         self.rng = random.Random(seed)
+        self.debug_path = None   # a file: log every search whose engine options weren't all legal
         self.prior = get_prior()
         self.stats = Counter()
         self.latency = []
@@ -88,7 +93,7 @@ class SearchPolicy:
         iters = 0
         for _ in range(n):
             sets, _ = sample_opponent(self.prior, obs, self.rng, weight_fn)
-            state, _ = build_state(battle, sets)
+            state, _ = build_state(battle, sets, self.lock_choice)
             if self.iterations or self.iters_per_ms:
                 its = self.iterations or max(1, int(self.iters_per_ms * ms))
                 r = pe.monte_carlo_tree_search(state, iterations=its, threads=self.threads)
@@ -97,6 +102,7 @@ class SearchPolicy:
             total = max(r.total_visits, 1)
             iters += r.total_visits
             self.sample_iters.append(r.total_visits)
+            bad = []
             for x in r.side_one:
                 a = option_to_action(x.move_choice, battle, state)
                 if a >= 0 and mask[a]:
@@ -106,6 +112,9 @@ class SearchPolicy:
                         ("tera" if x.move_choice.endswith("-tera") else
                          ("switch" if x.move_choice.startswith("switch ") else "move"))
                     self.stats[f"illegal option visits dropped ({kind})"] += x.visits
+                    bad.append(x.move_choice)
+            if bad and self.debug_path:
+                self._debug(battle, mask, state, r, bad)
         self.last = {"shares": dict(shares), "iterations": iters, "samples": n}
         if self.prior_weight:
             pi = self.net.policy(battle)
@@ -124,7 +133,7 @@ class SearchPolicy:
         n_revealed = min(len(battle.opponent_team), 6)
         for _ in range(n):
             sets, _ = sample_opponent(self.prior, obs, self.rng, weight_fn)
-            state, _ = build_state(battle, sets)
+            state, _ = build_state(battle, sets, self.lock_choice)
             t1 = time.perf_counter()
             r = pe.emm_matrix(state, self.emm_depth, False)
             self.sample_iters.append(int(1e6 * (time.perf_counter() - t1)))   # microseconds, for report()
@@ -144,6 +153,23 @@ class SearchPolicy:
         scores = {a: totals[a] / counts[a] for a in totals}
         self.last = {"values": dict(scores), "samples": n}
         return scores
+
+    def _debug(self, battle, mask, state, r, bad):
+        import json
+        req = battle.last_request or {}
+        s1 = state.side_one
+        rec = {"turn": battle.turn, "role": battle.player_role, "bad": bad,
+               "options": [x.move_choice for x in r.side_one], "legal": [int(a) for a in np.flatnonzero(mask)],
+               "forceSwitch": req.get("forceSwitch"), "active": (req.get("active") or [None])[0],
+               "reviving": battle.reviving, "s1_force_switch": s1.force_switch, "s1_active": s1.active_index,
+               "s1": [(p.id, p.hp, [(m.id, m.pp, m.disabled) for m in p.moves]) for p in s1.pokemon],
+               "s1_vols": sorted(s1.volatile_statuses), "s2_active": state.side_two.pokemon[int(state.side_two.active_index)].id,
+               "s2_ability": state.side_two.pokemon[int(state.side_two.active_index)].ability,
+               "team": [m.species for m in battle.team.values()],
+               "avail_switches": [m.species for m in battle.available_switches],
+               "avail_moves": [m.id for m in battle.available_moves]}
+        with open(self.debug_path, "a") as f:
+            f.write(json.dumps(rec) + "\n")
 
     def choose(self, shares):
         best = max(shares.values())

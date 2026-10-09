@@ -97,6 +97,20 @@ not a faint), trapped, Baton Pass / Shed Tail, slow U-turn (the opponent's move 
 can-tera (kept after the terastallized Pokemon faints: the request then clears the flag). A
 benched opponent with Regenerator (revealed or sampled) gets its third back.
 
+Fixed after the Phase 1 evals (October 9, found with the search bot's own games; on by default since):
+- A recharge turn skipped by Truant left poke-env's `must_recharge` set: the engine saw a Slaking that
+  couldn't move while the request offered moves and switches, and the bot fell back to its first
+  legal action. "Must recharge" now comes from the request (own side: only Recharge listed) and from
+  the log for the opponent (`-mustrecharge`, cleared by its next move, cant or switch).
+- The opponent's choice lock: an active holding a Choice item (shown or sampled) that has used one
+  move since it switched in can only use that move (`lock_choice`, as Foul Play's `lock_moves`;
+  before, the search let a locked opponent pick any move). Live games: when the opponent is really
+  locked, the observer locks the same moves in 58-59% of decisions (the rest: its sampled item isn't
+  a Choice item). Same for a locked move (Outrage): the engine only stops the locked side switching.
+- `infer_items` also infers Heavy-Duty Boots (or Magic Guard) when an opponent switches into Stealth
+  Rock without damage (as Foul Play does). On live games every inference is right: 15,359 ruled-out
+  items, 415 inferred Boots, none wrong.
+
 `python3 -m tools.check_search_state --games 200 --port 8123` on live two-sided games (random vs
 SimpleHeuristics / random; 198 games without Illusion, 17,108 decisions, 9,139 turns):
 - Observer vs truth: species / forme, level, fainted, status, revealed moves (all true moves), known
@@ -185,3 +199,40 @@ gamma 1 overshoots (worse log-probability than 0.5 on every attribute in a first
 the tera-type head is no better than the prior on hidden tera types (-0.766 vs -0.777 at gamma
 0.25, lower top-1), so it isn't used. Ability: too few errors to tell (a few changed abilities
 dominate the mean).
+
+### Phase 2 A/Bs (October 9, 2026)
+Head-to-heads against the Phase 1 bot, both seats, both bots on the fixed budget of 600 MCTS
+iterations per ms (so several runs could share the Mac), 1,000 games unless noted (±3.1 points):
+
+| Variant | Change | vs Phase 1 |
+|---|---|---|
+| (a) prior 0.5 | visit share + 0.5 * pi_net | **45.4%** (46.0% / 44.8% by seat) |
+| (a) prior 0.15 | visit share + 0.15 * pi_net | 52.1% (53.2% / 51.0%) |
+| (b) hidden sets | aux-head reweighting (gamma 0.5) + inferred items | 52.6% (52.6% / 52.6%) |
+| (c) opponent model | expectiminimax depth 2 x 16 samples, 0.5 worst case + 0.5 expected under v21's next-action head | 37.0% (seat 1, 500 games); 34.9% in 350 of seat 2, stopped |
+| (c) vs its own baseline | the same against worst-case expectiminimax (depth 2 x 16) | 50.7% |
+
+- (a): at 0.5 the network overrides the search's top option in 20% of decisions (v21's top action
+  agrees with the search's only 45% of the time), and that costs ~5 points: v21 plays ~300 Elo
+  below Foul Play-level search, so its preferences are mostly worse than the search's. At 0.15 it
+  changes the top option in 8% of decisions: +2.1 points, inside the noise.
+- (b): +2.6 points, inside the noise. The better set predictions (item top-1 77% -> 82%) are real
+  but small, and a small change in opponent sets moves the search little.
+- (c): the next-action head adds nothing measurable to expectiminimax (50.7% ± 3.1% against the
+  same search scoring the worst case), and expectiminimax at the depth that fits the budget (2;
+  depth 3 takes seconds in complex positions) is far weaker than MCTS.
+
+### Phase 1 settings (October 9, 2026; same setup as the Phase 2 A/Bs)
+| Variant | vs Phase 1 |
+|---|---|
+| deterministic: always the most visited option (Phase 1: Foul Play's random pick among options within 75% of the best) | 50.5% ± 3.1% (49.4% / 51.6%) |
+| 3x samples (6 x 100 ms, 12 x 50 ms early: 3x the budget) | 48.0% (seat 1, 300 games, stopped) |
+| 2.5x MCTS iterations per sample (2.5x the budget) | 55.0% ± 4.4% (seat 1, 500 games); seat 2 52% after 100 (stopped) |
+
+More sampled opponent teams don't help; more search per team helps a little.
+
+Stopped on October 9 at 16:12 (paused at the user's request; the eval scripts can't resume, so these
+restart from scratch), partial: the combined Phase 2 bot ((a) 0.15 + (b)) 49.6% after 250 games of
+seat 1; the choice-lock fix vs the same bot without it 48.7% after 300; the final candidate (both,
+plus the locks and Boots inference) vs Phase 1 without the choice lock 48.0% after 50. Not run yet:
+Phase 2 against Foul Play.
