@@ -95,3 +95,5 @@ v17-v19 (SB3):
   gain): `agent_docs/v21.md`; the brief it was built from: `agent_docs/step4_brief.md`
 - the v20 A/Bs and how runs are started, monitored and judged on this Mac:
   `agent_docs/step4_handoff.md`
+- building step 6 (search at decision time on poke-engine, the network as prior and opponent
+  model), the next job: `agent_docs/step6_brief.md`

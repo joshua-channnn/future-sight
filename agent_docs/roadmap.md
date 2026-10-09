@@ -107,7 +107,12 @@
    (level with v20), no aux losses level (after a 1.2M-step stall), half the LR clearly worse
    (43% vs v21) despite a v20-like start. Nothing got past v20.
 5. Scale out on a many-core cloud machine (~2 cores per env), with the PPO update on a GPU.
-6. Search last. It added about 100-150 Elo on top of Jaxcalibur's network.
+6. Next (chosen over step 5 on October 9, 2026; brief in `step6_brief.md`, approved): search at
+   decision time. Phase 1, a Foul Play-style bot of our own on poke-engine (MIT): our converter
+   from poke-env battles to engine states, opponent sets sampled from the fork's own generator,
+   MCTS per sample. Phase 2, the network in the loop: policy prior, v21's aux heads for the hidden
+   sets, its next-action head as the opponent model. Search added about 100-150 Elo on top of
+   Jaxcalibur's network; Foul Play's search alone is ~300 Elo above v20.
 
 Two Wang settings tuned on 3v3 battles, which are half as long, were A/B'd on v20: `clip_range_vf`
 (None only gave a faster start) and `gae_lambda` (0.95 was clearly worse). Results in `v20.md`.
