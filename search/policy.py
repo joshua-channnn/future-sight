@@ -91,6 +91,7 @@ class SearchPolicy:
             return self._search_emm(battle, mask, self.emm_samples, obs, weight_fn)
         shares = defaultdict(float)
         iters = 0
+        value = 0.0
         for _ in range(n):
             sets, _ = sample_opponent(self.prior, obs, self.rng, weight_fn)
             state, _ = build_state(battle, sets, self.lock_choice)
@@ -102,6 +103,9 @@ class SearchPolicy:
             total = max(r.total_visits, 1)
             iters += r.total_visits
             self.sample_iters.append(r.total_visits)
+            # the root's mean score for side one (the engine's sigmoid-of-evaluation units, 0..1)
+            visits = sum(x.visits for x in r.side_one)
+            value += (sum(x.total_score for x in r.side_one) / visits if visits else 0.5) / n
             bad = []
             for x in r.side_one:
                 a = option_to_action(x.move_choice, battle, state)
@@ -115,7 +119,7 @@ class SearchPolicy:
                     bad.append(x.move_choice)
             if bad and self.debug_path:
                 self._debug(battle, mask, state, r, bad)
-        self.last = {"shares": dict(shares), "iterations": iters, "samples": n}
+        self.last = {"shares": dict(shares), "iterations": iters, "samples": n, "value": value}
         if self.prior_weight:
             pi = self.net.policy(battle)
             before = max(shares, key=shares.get) if shares else None

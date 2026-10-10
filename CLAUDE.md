@@ -112,3 +112,5 @@ v17-v19 (SB3):
   `agent_docs/step4_handoff.md`
 - step 6 (search at decision time on poke-engine, the network as prior, set model and opponent
   model): `agent_docs/step6.md`; the brief it was built from: `agent_docs/step6_brief.md`
+- step 7, the next job (search self-play data, then distilling the search into the network):
+  `agent_docs/step7_brief.md`
