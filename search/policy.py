@@ -20,6 +20,7 @@ import poke_engine as pe
 from poke_env.player import DefaultBattleOrder, Player
 
 from envs.rl_player_v20 import action_mask, action_to_order, hold_requests_until_log
+from search.leaf_eval import evaluator_id, mcts as leaf_mcts
 from search.sampling import get_prior, observations, sample_opponent
 from search.state import build_state, option_to_action, tracker
 
@@ -28,7 +29,7 @@ class SearchPolicy:
     def __init__(self, samples=2, ms=100, early_samples=4, early_ms=50, threads=1, near_best=0.75,
                  deterministic=False, seed=None, iterations=0, iters_per_ms=0.0, net=None, prior_weight=0.0,
                  set_gamma=0.0, infer_items=False, algo="mcts", emm_depth=2, emm_samples=8, worst_weight=1.0,
-                 lock_choice=True):
+                 lock_choice=True, leaf_eval=None, leaf_mode=2, leaf_scale=1.0):
         """samples x ms: the budget per decision (early_samples x early_ms early in the game, as
         Foul Play). near_best: pick among options with at least this share of the best one's
         visits (Foul Play: 0.75); deterministic: always the best. iterations > 0 replaces the time
@@ -47,7 +48,12 @@ class SearchPolicy:
             scored by worst_weight * its worst case + (1 - worst_weight) * its expected value under
             the network's prediction of the opponent's action. worst_weight 1 is plain
             expectiminimax (no network). Depth 2 costs 1-4 ms per sample, depth 3 a median 70 ms but
-            seconds in complex positions, so depth 2 on 8 samples is the default."""
+            seconds in complex positions, so depth 2 on 8 samples is the default.
+
+        Step 7: leaf_eval, the weights of a learned leaf evaluation (search/leaf_eval.py, from
+        training/train_leaf_eval.py) in place of the engine's hand-written one; leaf_mode 1 scores a
+        leaf sigmoid(v), 2 sigmoid(leaf_scale * (v - v(root))). Needs the engine patch
+        learned_eval.patch and threads 1."""
         if (prior_weight or set_gamma or (algo == "emm" and worst_weight < 1)) and net is None:
             raise ValueError("prior_weight, set_gamma and the opponent model need net (search.net.NetModel)")
         if algo not in ("mcts", "emm"):
@@ -63,6 +69,11 @@ class SearchPolicy:
         self.iterations = iterations
         self.iters_per_ms = iters_per_ms
         self.lock_choice = lock_choice
+        self.leaf_id = 0   # 0: the engine's hand-written evaluation
+        if leaf_eval:
+            if threads != 1:
+                raise ValueError("leaf_eval needs threads 1")
+            self.leaf_id = evaluator_id(leaf_eval, leaf_mode, leaf_scale)
         self.rng = random.Random(seed)
         self.debug_path = None   # a file: log every search whose engine options weren't all legal
         self.prior = get_prior()
@@ -96,8 +107,12 @@ class SearchPolicy:
         for _ in range(n):
             sets, _ = sample_opponent(self.prior, obs, self.rng, weight_fn)
             state, _ = build_state(battle, sets, self.lock_choice)
+            its = 0   # 0: the time budget
             if self.iterations or self.iters_per_ms:
                 its = self.iterations or max(1, int(self.iters_per_ms * ms))
+            if self.leaf_id:
+                r = leaf_mcts(state, ms, its, self.leaf_id)
+            elif its:
                 r = pe.monte_carlo_tree_search(state, iterations=its, threads=self.threads)
             else:
                 r = pe.monte_carlo_tree_search(state, ms, threads=self.threads)

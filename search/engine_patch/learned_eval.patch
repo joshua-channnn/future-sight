@@ -1,0 +1,700 @@
+diff --git a/poke-engine-py/src/lib.rs b/poke-engine-py/src/lib.rs
+index a59243d..ce0657b 100644
+--- a/poke-engine-py/src/lib.rs
++++ b/poke-engine-py/src/lib.rs
+@@ -11,7 +11,9 @@ use poke_engine::engine::generate_instructions::{
+ use poke_engine::engine::items::Items;
+ use poke_engine::engine::state::{MoveChoice, PokemonVolatileStatus, Terrain, Weather};
+ use poke_engine::instruction::{Instruction, StateInstructions};
+-use poke_engine::mcts::{perform_mcts, MctsResult, MctsSideResult};
++use poke_engine::engine::evaluate::evaluate;
++use poke_engine::engine::learned;
++use poke_engine::mcts::{perform_mcts, perform_mcts_with, MctsResult, MctsSideResult};
+ use poke_engine::mcts_threaded::perform_mcts_shared_tree;
+ use poke_engine::pokemon::PokemonName;
+ use poke_engine::search::{expectiminimax_search, iterative_deepen_expectiminimax};
+@@ -986,6 +988,105 @@ fn emm_matrix(py_state: PyState, depth: i8, ab_prune: bool) -> PyResult<PyIterat
+     ))
+ }
+ 
++fn learned_evaluator(id: usize) -> PyResult<Option<Arc<learned::Evaluator>>> {
++    if id == 0 {
++        return Ok(None);
++    }
++    match learned::get(id) {
++        Some(e) => Ok(Some(e)),
++        None => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
++            "no evaluator {}",
++            id
++        ))),
++    }
++}
++
++/// The features of the learned leaf evaluation (engine::learned) for each serialized state,
++/// flattened (len(feature_names()) per state). Added for pokemon-rl, step 7.
++#[pyfunction]
++fn features_from_strings(states: Vec<String>) -> PyResult<Vec<f32>> {
++    let n = learned::N_FEATURES;
++    let mut out = vec![0f32; states.len() * n];
++    for (i, s) in states.iter().enumerate() {
++        let state = State::deserialize(s);
++        learned::features(&state, &mut out[i * n..(i + 1) * n]);
++    }
++    Ok(out)
++}
++
++#[pyfunction]
++fn feature_names() -> Vec<String> {
++    let mut names = Vec::with_capacity(learned::N_FEATURES);
++    for side in ["s1", "s2"] {
++        for n in learned::SIDE_NAMES.iter() {
++            names.push(format!("{}_{}", side, n));
++        }
++    }
++    for n in learned::CROSS_NAMES.iter() {
++        names.push(n.to_string());
++    }
++    names
++}
++
++/// Register a learned leaf evaluation (engine::learned::Evaluator) for mcts_with; returns its id.
++#[pyfunction]
++fn load_evaluator(
++    hidden: usize,
++    w1: Vec<f32>,
++    b1: Vec<f32>,
++    w2: Vec<f32>,
++    mode: u8,
++    scale: f32,
++) -> PyResult<usize> {
++    match learned::Evaluator::new(hidden, w1, b1, w2, mode, scale) {
++        Ok(e) => Ok(learned::register(e)),
++        Err(msg) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(msg)),
++    }
++}
++
++/// An evaluator's value of each serialized state: the logit of side one winning (evaluator 0:
++/// the hand-written evaluate()).
++#[pyfunction]
++fn evaluator_values(evaluator: usize, states: Vec<String>) -> PyResult<Vec<f32>> {
++    let e = learned_evaluator(evaluator)?;
++    Ok(states
++        .iter()
++        .map(|s| {
++            let state = State::deserialize(s);
++            match &e {
++                None => evaluate(&state),
++                Some(e) => e.value(&state),
++            }
++        })
++        .collect())
++}
++
++/// mcts on one thread with a learned leaf evaluation (evaluator 0: the hand-written one).
++#[pyfunction]
++fn mcts_with(
++    py_state: PyState,
++    duration_ms: u64,
++    mut iterations: u32,
++    evaluator: usize,
++) -> PyResult<PyMctsResult> {
++    let e = learned_evaluator(evaluator)?;
++    let mut state: State = py_state.into();
++    let duration = Duration::from_millis(duration_ms);
++    let (s1_options, s2_options) = state.root_get_all_options();
++    if s1_options.len() <= 1 {
++        iterations = 100; // as mcts
++    }
++    let mcts_result = perform_mcts_with(
++        &mut state,
++        s1_options,
++        s2_options,
++        duration,
++        iterations,
++        e.as_deref(),
++    );
++    Ok(PyMctsResult::from_mcts_result(mcts_result, &state))
++}
++
+ #[derive(Clone)]
+ #[pyclass(
+     name = "StateInstructions",
+@@ -1153,6 +1254,11 @@ fn py_poke_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
+     m.add_function(wrap_pyfunction!(generate_instructions, m)?)?;
+     m.add_function(wrap_pyfunction!(id, m)?)?;
+     m.add_function(wrap_pyfunction!(emm_matrix, m)?)?;
++    m.add_function(wrap_pyfunction!(features_from_strings, m)?)?;
++    m.add_function(wrap_pyfunction!(feature_names, m)?)?;
++    m.add_function(wrap_pyfunction!(load_evaluator, m)?)?;
++    m.add_function(wrap_pyfunction!(evaluator_values, m)?)?;
++    m.add_function(wrap_pyfunction!(mcts_with, m)?)?;
+     m.add_function(wrap_pyfunction!(mcts, m)?)?;
+     m.add_class::<PyState>()?;
+     m.add_class::<PySide>()?;
+diff --git a/src/genx/generate_instructions.rs b/src/genx/generate_instructions.rs
+index 3b173fe..e60adc8 100644
+--- a/src/genx/generate_instructions.rs
++++ b/src/genx/generate_instructions.rs
+@@ -2491,7 +2491,7 @@ fn combine_duplicate_instructions(list_of_instructions: &mut Vec<StateInstructio
+     }
+ }
+ 
+-fn get_effective_speed(state: &State, side_reference: &SideReference) -> i16 {
++pub fn get_effective_speed(state: &State, side_reference: &SideReference) -> i16 {
+     let side = state.get_side_immutable(side_reference);
+     let active_pkmn = side.get_active_immutable();
+ 
+diff --git a/src/genx/learned.rs b/src/genx/learned.rs
+new file mode 100644
+index 0000000..68d5ae2
+--- /dev/null
++++ b/src/genx/learned.rs
+@@ -0,0 +1,437 @@
++//! A learned leaf evaluation for MCTS (pokemon-rl, step 7): features of a state and a small
++//! antisymmetric model on them, v(state) = g(x) - g(swap(x)), the logit of side one winning.
++//! x = [side features of side one, of side two, cross features]; swap(x) exchanges the two
++//! sides and negates the cross features (they are antisymmetric), so v(mirror) = -v exactly.
++//! Training (Python) reads the same features through the `features_from_strings` binding.
++
++use super::abilities::Abilities;
++use super::damage_calc::type_effectiveness_modifier;
++use super::evaluate::evaluate;
++use super::generate_instructions::get_effective_speed;
++use super::items::Items;
++use super::state::PokemonVolatileStatus;
++use crate::choices::MoveCategory;
++use crate::state::{
++    Pokemon, PokemonBoostableStat, PokemonStatus, PokemonType, Side, SideReference, State,
++};
++use std::sync::{Arc, Mutex};
++
++pub const SIDE_NAMES: [&str; 52] = [
++    "alive1", "alive2", "alive3", "alive4", "alive5", "alive6", // one-hot of the number alive
++    "hp_sum", "hp_sq_sum", "active_hp", "items", "tera_used", "active_tera",
++    "burn_phys", "burned", "frozen", "asleep", "paralyzed", "toxic", "poisoned", "status_good",
++    "active_status",
++    "rocks", "rocks_dmg", "spikes", "tspikes", "web",
++    "atk_boost", "def_boost", "spa_boost", "spd_boost", "spe_boost", "acc_boost", "eva_boost",
++    "leechseed", "substitute", "confusion", "taunt", "encore", "yawn", "perish", "trapped",
++    "saltcure",
++    "reflect", "lightscreen", "auroraveil", "safeguard", "tailwind", "healingwish", "wish",
++    "futuresight",
++    "stats_alive", "force_switch",
++];
++pub const CROSS_NAMES: [&str; 6] = [
++    "hand_eval", "faster", "dmg", "ko", "ko_first", "dmg_first",
++];
++pub const N_SIDE: usize = SIDE_NAMES.len();
++pub const N_CROSS: usize = CROSS_NAMES.len();
++pub const N_FEATURES: usize = 2 * N_SIDE + N_CROSS;
++
++fn boost_multiplier(boost: i8) -> f32 {
++    // evaluate.rs's table
++    match boost.clamp(-6, 6) {
++        6 => 3.3,
++        5 => 3.15,
++        4 => 3.0,
++        3 => 2.5,
++        2 => 2.0,
++        1 => 1.0,
++        0 => 0.0,
++        -1 => -1.0,
++        -2 => -2.0,
++        -3 => -2.5,
++        -4 => -3.0,
++        -5 => -3.15,
++        _ => -3.3,
++    }
++}
++
++fn status_is_good(p: &Pokemon) -> bool {
++    match p.ability {
++        Abilities::GUTS | Abilities::MARVELSCALE | Abilities::QUICKFEET | Abilities::MAGICGUARD => {
++            true
++        }
++        Abilities::POISONHEAL | Abilities::TOXICBOOST => {
++            p.status == PokemonStatus::POISON || p.status == PokemonStatus::TOXIC
++        }
++        _ => false,
++    }
++}
++
++fn burn_physical(p: &Pokemon) -> f32 {
++    // evaluate.rs's burn weight: physical moves, halved for special attackers
++    let mut m = 0.0;
++    for mv in p.moves.into_iter() {
++        if mv.choice.category == MoveCategory::Physical {
++            m += 1.0;
++        }
++    }
++    if p.special_attack > p.attack {
++        m /= 2.0;
++    }
++    m
++}
++
++fn b(x: bool) -> f32 {
++    if x {
++        1.0
++    } else {
++        0.0
++    }
++}
++
++fn side_features(side: &Side, out: &mut [f32]) {
++    for v in out.iter_mut() {
++        *v = 0.0;
++    }
++    let active = side.get_active_immutable();
++    let sc = &side.side_conditions;
++    let mut n_alive = 0usize;
++    for p in side.pokemon.pkmn.iter() {
++        let is_active = std::ptr::eq(p, active);
++        if p.terastallized {
++            out[10] = 1.0;
++            if is_active {
++                out[11] = 1.0;
++            }
++        }
++        if p.hp <= 0 {
++            continue;
++        }
++        n_alive += 1;
++        let f = p.hp as f32 / (p.maxhp.max(1)) as f32;
++        out[6] += f;
++        out[7] += f * f;
++        if is_active {
++            out[8] = f;
++        }
++        if p.item != Items::NONE {
++            out[9] += 1.0;
++        }
++        if p.status != PokemonStatus::NONE {
++            if is_active {
++                out[20] = 1.0;
++            }
++            if status_is_good(p) {
++                out[19] += 1.0;
++            } else {
++                match p.status {
++                    PokemonStatus::BURN => {
++                        out[12] += burn_physical(p);
++                        out[13] += 1.0;
++                    }
++                    PokemonStatus::FREEZE => out[14] += 1.0,
++                    PokemonStatus::SLEEP => out[15] += 1.0,
++                    PokemonStatus::PARALYZE => out[16] += 1.0,
++                    PokemonStatus::TOXIC => out[17] += 1.0,
++                    PokemonStatus::POISON => out[18] += 1.0,
++                    PokemonStatus::NONE => {}
++                }
++            }
++        }
++        if p.item != Items::HEAVYDUTYBOOTS {
++            let grounded = p.is_grounded();
++            if p.ability != Abilities::MAGICGUARD {
++                if sc.stealth_rock > 0 {
++                    out[21] += 1.0;
++                    out[22] += type_effectiveness_modifier(&PokemonType::ROCK, p) / 8.0;
++                }
++                if grounded {
++                    out[23] += sc.spikes as f32;
++                    out[24] += sc.toxic_spikes as f32;
++                }
++            }
++            if grounded {
++                out[25] += sc.sticky_web as f32;
++            }
++        }
++        let stats = p.attack as f32
++            + p.defense as f32
++            + p.special_attack as f32
++            + p.special_defense as f32
++            + p.speed as f32
++            + p.maxhp as f32;
++        out[50] += f * stats / 1000.0;
++    }
++    if n_alive >= 1 {
++        out[n_alive.min(6) - 1] = 1.0;
++    }
++    if active.hp > 0 {
++        out[26] = boost_multiplier(side.attack_boost);
++        out[27] = boost_multiplier(side.defense_boost);
++        out[28] = boost_multiplier(side.special_attack_boost);
++        out[29] = boost_multiplier(side.special_defense_boost);
++        out[30] = boost_multiplier(side.speed_boost);
++        out[31] = side.accuracy_boost as f32 / 6.0;
++        out[32] = side.evasion_boost as f32 / 6.0;
++        let v = &side.volatile_statuses;
++        out[33] = b(v.contains(&PokemonVolatileStatus::LEECHSEED));
++        out[34] = b(v.contains(&PokemonVolatileStatus::SUBSTITUTE));
++        out[35] = b(v.contains(&PokemonVolatileStatus::CONFUSION));
++        out[36] = b(v.contains(&PokemonVolatileStatus::TAUNT));
++        out[37] = b(v.contains(&PokemonVolatileStatus::ENCORE));
++        out[38] = b(v.contains(&PokemonVolatileStatus::YAWN));
++        out[39] = b(v.contains(&PokemonVolatileStatus::PERISH1)
++            || v.contains(&PokemonVolatileStatus::PERISH2)
++            || v.contains(&PokemonVolatileStatus::PERISH3)
++            || v.contains(&PokemonVolatileStatus::PERISH4));
++        out[40] = b(v.contains(&PokemonVolatileStatus::PARTIALLYTRAPPED));
++        out[41] = b(v.contains(&PokemonVolatileStatus::SALTCURE));
++    }
++    out[42] = b(sc.reflect > 0);
++    out[43] = b(sc.light_screen > 0);
++    out[44] = b(sc.aurora_veil > 0);
++    out[45] = b(sc.safeguard > 0);
++    out[46] = b(sc.tailwind > 0);
++    out[47] = b(sc.healing_wish > 0);
++    out[48] = b(side.wish.0 > 0);
++    out[49] = b(side.future_sight.0 > 0);
++    out[51] = b(side.force_switch);
++}
++
++fn immune_by_ability(defender: &Pokemon, move_type: &PokemonType) -> bool {
++    match move_type {
++        PokemonType::GROUND => {
++            defender.ability == Abilities::EARTHEATER || !defender.is_grounded()
++        }
++        PokemonType::FIRE => matches!(
++            defender.ability,
++            Abilities::FLASHFIRE | Abilities::WELLBAKEDBODY
++        ),
++        PokemonType::WATER => matches!(
++            defender.ability,
++            Abilities::WATERABSORB | Abilities::STORMDRAIN | Abilities::DRYSKIN
++        ),
++        PokemonType::ELECTRIC => matches!(
++            defender.ability,
++            Abilities::VOLTABSORB | Abilities::LIGHTNINGROD | Abilities::MOTORDRIVE
++        ),
++        PokemonType::GRASS => defender.ability == Abilities::SAPSIPPER,
++        _ => false,
++    }
++}
++
++fn stab(move_type: &PokemonType, p: &Pokemon) -> f32 {
++    // damage_calc.rs's stab_modifier
++    if move_type == &PokemonType::TYPELESS {
++        return 1.0;
++    }
++    let basic = move_type == &p.types.0 || move_type == &p.types.1;
++    if p.terastallized {
++        if &p.tera_type == move_type && basic {
++            return 2.0;
++        } else if &p.tera_type == move_type || basic {
++            return 1.5;
++        }
++    } else if basic {
++        return 1.5;
++    }
++    1.0
++}
++
++/// A rough best-move damage estimate of the active attacker against the active defender, as a
++/// fraction of the defender's current HP (capped at 1): the damage formula with boosted stats,
++/// STAB, type effectiveness, ability immunities and burn; no items, weather, screens or
++/// variable-power and fixed-damage moves.
++fn damage_fraction(att_side: &Side, att: &Pokemon, def_side: &Side, def: &Pokemon) -> f32 {
++    let mut best = 0.0f32;
++    let level = att.level as f32;
++    for mv in att.moves.into_iter() {
++        let c = &mv.choice;
++        if mv.disabled || mv.pp <= 0 || c.base_power <= 0.0 {
++            continue;
++        }
++        let (a, d) = match c.category {
++            MoveCategory::Physical => (
++                att_side.calculate_boosted_stat(PokemonBoostableStat::Attack),
++                def_side.calculate_boosted_stat(PokemonBoostableStat::Defense),
++            ),
++            MoveCategory::Special => (
++                att_side.calculate_boosted_stat(PokemonBoostableStat::SpecialAttack),
++                def_side.calculate_boosted_stat(PokemonBoostableStat::SpecialDefense),
++            ),
++            _ => continue,
++        };
++        if immune_by_ability(def, &c.move_type) {
++            continue;
++        }
++        let eff = type_effectiveness_modifier(&c.move_type, def);
++        if eff == 0.0 {
++            continue;
++        }
++        let mut dmg = ((2.0 * level / 5.0 + 2.0) * c.base_power * a as f32 / (d.max(1) as f32))
++            / 50.0
++            + 2.0;
++        dmg *= stab(&c.move_type, att) * eff * 0.925;
++        if c.category == MoveCategory::Physical
++            && att.status == PokemonStatus::BURN
++            && att.ability != Abilities::GUTS
++        {
++            dmg *= 0.5;
++        }
++        if def.ability == Abilities::THICKFAT
++            && (c.move_type == PokemonType::FIRE || c.move_type == PokemonType::ICE)
++        {
++            dmg *= 0.5;
++        }
++        best = best.max(dmg);
++    }
++    (best / (def.hp.max(1) as f32)).min(1.0)
++}
++
++fn cross_features(state: &State, out: &mut [f32]) {
++    for v in out.iter_mut() {
++        *v = 0.0;
++    }
++    out[0] = evaluate(state) / 100.0;
++    let a1 = state.side_one.get_active_immutable();
++    let a2 = state.side_two.get_active_immutable();
++    if a1.hp <= 0 || a2.hp <= 0 {
++        return;
++    }
++    let s1 = get_effective_speed(state, &SideReference::SideOne);
++    let s2 = get_effective_speed(state, &SideReference::SideTwo);
++    let (mut f1, mut f2) = (b(s1 > s2), b(s2 > s1));
++    if state.trick_room.active {
++        std::mem::swap(&mut f1, &mut f2);
++    }
++    let d12 = damage_fraction(&state.side_one, a1, &state.side_two, a2);
++    let d21 = damage_fraction(&state.side_two, a2, &state.side_one, a1);
++    let (k12, k21) = (b(d12 >= 1.0), b(d21 >= 1.0));
++    out[1] = f1 - f2;
++    out[2] = d12 - d21;
++    out[3] = k12 - k21;
++    out[4] = k12 * f1 - k21 * f2;
++    out[5] = d12 * f1 - d21 * f2;
++}
++
++/// The features of `state` into `out` (N_FEATURES).
++pub fn features(state: &State, out: &mut [f32]) {
++    side_features(&state.side_one, &mut out[..N_SIDE]);
++    side_features(&state.side_two, &mut out[N_SIDE..2 * N_SIDE]);
++    cross_features(state, &mut out[2 * N_SIDE..N_FEATURES]);
++}
++
++fn swap(x: &[f32], y: &mut [f32]) {
++    y[..N_SIDE].copy_from_slice(&x[N_SIDE..2 * N_SIDE]);
++    y[N_SIDE..2 * N_SIDE].copy_from_slice(&x[..N_SIDE]);
++    for i in 2 * N_SIDE..N_FEATURES {
++        y[i] = -x[i];
++    }
++}
++
++fn dot(a: &[f32], b: &[f32]) -> f32 {
++    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
++}
++
++/// g(x) = w2 . relu(W1 x + b1) (hidden > 0) or w . x (hidden 0); v = g(x) - g(swap(x)).
++/// mode 1: leaf score sigmoid(v); mode 2: sigmoid(scale * (v - v(root))).
++pub struct Evaluator {
++    pub hidden: usize,
++    pub w1: Vec<f32>,
++    pub b1: Vec<f32>,
++    pub w2: Vec<f32>,
++    pub mode: u8,
++    pub scale: f32,
++    linear: Vec<f32>, // hidden 0: v = linear . x
++}
++
++impl Evaluator {
++    pub fn new(
++        hidden: usize,
++        w1: Vec<f32>,
++        b1: Vec<f32>,
++        w2: Vec<f32>,
++        mode: u8,
++        scale: f32,
++    ) -> Result<Evaluator, String> {
++        let rows = hidden.max(1);
++        if w1.len() != rows * N_FEATURES {
++            return Err(format!("w1 has {} values, expected {}", w1.len(), rows * N_FEATURES));
++        }
++        if hidden > 0 && (b1.len() != hidden || w2.len() != hidden) {
++            return Err(format!("b1 and w2 need {} values each", hidden));
++        }
++        if mode != 1 && mode != 2 {
++            return Err(format!("mode {} (1: absolute, 2: relative to the root)", mode));
++        }
++        let mut linear = vec![0f32; N_FEATURES];
++        if hidden == 0 {
++            for i in 0..N_SIDE {
++                linear[i] = w1[i] - w1[N_SIDE + i];
++                linear[N_SIDE + i] = w1[N_SIDE + i] - w1[i];
++            }
++            for i in 2 * N_SIDE..N_FEATURES {
++                linear[i] = 2.0 * w1[i];
++            }
++        }
++        Ok(Evaluator {
++            hidden,
++            w1,
++            b1,
++            w2,
++            mode,
++            scale,
++            linear,
++        })
++    }
++
++    fn g(&self, x: &[f32]) -> f32 {
++        let mut s = 0.0;
++        for h in 0..self.hidden {
++            let z = dot(&self.w1[h * N_FEATURES..(h + 1) * N_FEATURES], x) + self.b1[h];
++            if z > 0.0 {
++                s += self.w2[h] * z;
++            }
++        }
++        s
++    }
++
++    /// The logit of side one winning.
++    pub fn value(&self, state: &State) -> f32 {
++        let mut x = [0f32; N_FEATURES];
++        features(state, &mut x);
++        if self.hidden == 0 {
++            return dot(&self.linear, &x);
++        }
++        let mut y = [0f32; N_FEATURES];
++        swap(&x, &mut y);
++        self.g(&x) - self.g(&y)
++    }
++
++    /// The MCTS score of a leaf (0..1, for side one) given the root's value.
++    pub fn score(&self, state: &State, root_value: f32) -> f32 {
++        let v = self.value(state);
++        let z = if self.mode == 2 {
++            self.scale * (v - root_value)
++        } else {
++            v
++        };
++        1.0 / (1.0 + (-z).exp())
++    }
++}
++
++static REGISTRY: Mutex<Vec<Arc<Evaluator>>> = Mutex::new(Vec::new());
++
++/// Keep an evaluator for later searches; returns its id (1, 2, ...; 0 is the hand-written one).
++pub fn register(e: Evaluator) -> usize {
++    let mut r = REGISTRY.lock().unwrap();
++    r.push(Arc::new(e));
++    r.len()
++}
++
++pub fn get(id: usize) -> Option<Arc<Evaluator>> {
++    if id == 0 {
++        return None;
++    }
++    REGISTRY.lock().unwrap().get(id - 1).cloned()
++}
+diff --git a/src/genx/mod.rs b/src/genx/mod.rs
+index fcab748..ca22f92 100644
+--- a/src/genx/mod.rs
++++ b/src/genx/mod.rs
+@@ -5,4 +5,5 @@ pub mod damage_calc;
+ pub mod evaluate;
+ pub mod generate_instructions;
+ pub mod items;
++pub mod learned;
+ pub mod state;
+diff --git a/src/mcts.rs b/src/mcts.rs
+index f1fb0ae..76ceaf3 100644
+--- a/src/mcts.rs
++++ b/src/mcts.rs
+@@ -1,4 +1,5 @@
+ use crate::engine::evaluate::evaluate;
++use crate::engine::learned::Evaluator;
+ use crate::engine::generate_instructions::generate_instructions_from_move_pair;
+ use crate::engine::state::MoveChoice;
+ use crate::instruction::StateInstructions;
+@@ -187,11 +188,13 @@ impl Node {
+         (*self.parent).backpropagate(score, state);
+     }
+ 
+-    pub fn rollout(&mut self, state: &mut State, root_eval: &f32) -> f32 {
++    pub fn rollout(&mut self, state: &mut State, root_eval: &f32, ev: Option<&Evaluator>) -> f32 {
+         let battle_is_over = state.battle_is_over();
+         if battle_is_over == 0.0 {
+-            let eval = evaluate(state);
+-            sigmoid(eval - root_eval)
++            match ev {
++                None => sigmoid(evaluate(state) - root_eval),
++                Some(e) => e.score(state, *root_eval),
++            }
+         } else {
+             if battle_is_over == -1.0 {
+                 0.0
+@@ -253,10 +256,11 @@ fn mcts_iteration(
+     root_eval: &f32,
+     children: &mut HashMap<(usize, usize, usize), Box<[Node]>>,
+     rng: &mut impl Rng,
++    ev: Option<&Evaluator>,
+ ) {
+     let (mut new_node, s1_move, s2_move) = unsafe { root_node.selection(state, children, rng) };
+     new_node = unsafe { (*new_node).expand(state, s1_move, s2_move, children, rng) };
+-    let rollout_result = unsafe { (*new_node).rollout(state, root_eval) };
++    let rollout_result = unsafe { (*new_node).rollout(state, root_eval, ev) };
+     unsafe { (*new_node).backpropagate(rollout_result, state) }
+ }
+ 
+@@ -271,12 +275,13 @@ fn run_mcts_loop(
+     root_eval: &f32,
+     children: &mut HashMap<(usize, usize, usize), Box<[Node]>>,
+     limit: SearchLimit,
++    ev: Option<&Evaluator>,
+ ) {
+     let mut rng = rng();
+     let start_time = std::time::Instant::now();
+     loop {
+         for _ in 0..1000 {
+-            mcts_iteration(root_node, state, root_eval, children, &mut rng);
++            mcts_iteration(root_node, state, root_eval, children, &mut rng, ev);
+         }
+         if root_node.times_visited >= 10_000_000 {
+             break;
+@@ -302,6 +307,25 @@ pub fn perform_mcts(
+     side_two_options: Vec<MoveChoice>,
+     max_time: Duration,
+     max_iterations: u32,
++) -> MctsResult {
++    perform_mcts_with(
++        state,
++        side_one_options,
++        side_two_options,
++        max_time,
++        max_iterations,
++        None,
++    )
++}
++
++/// perform_mcts with a learned leaf evaluation (engine::learned; None: the hand-written one).
++pub fn perform_mcts_with(
++    state: &mut State,
++    side_one_options: Vec<MoveChoice>,
++    side_two_options: Vec<MoveChoice>,
++    max_time: Duration,
++    max_iterations: u32,
++    ev: Option<&Evaluator>,
+ ) -> MctsResult {
+     let mut root_node = Node::new();
+     unsafe {
+@@ -310,7 +334,10 @@ pub fn perform_mcts(
+     root_node.root = true;
+     let mut children: HashMap<(usize, usize, usize), Box<[Node]>> = HashMap::new();
+ 
+-    let root_eval = evaluate(state);
++    let root_eval = match ev {
++        None => evaluate(state),
++        Some(e) => e.value(state),
++    };
+     let search_limit = if max_iterations > 0 {
+         SearchLimit::Iterations(max_iterations)
+     } else {
+@@ -322,6 +349,7 @@ pub fn perform_mcts(
+         &root_eval,
+         &mut children,
+         search_limit,
++        ev,
+     );
+ 
+     let result = MctsResult {
