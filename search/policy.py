@@ -90,6 +90,7 @@ class SearchPolicy:
         if self.algo == "emm":
             return self._search_emm(battle, mask, self.emm_samples, obs, weight_fn)
         shares = defaultdict(float)
+        q_score, q_visits = defaultdict(float), defaultdict(int)   # per action, over the samples
         iters = 0
         value = 0.0
         for _ in range(n):
@@ -111,6 +112,8 @@ class SearchPolicy:
                 a = option_to_action(x.move_choice, battle, state)
                 if a >= 0 and mask[a]:
                     shares[a] += x.visits / total / n
+                    q_score[a] += x.total_score
+                    q_visits[a] += x.visits
                 else:
                     kind = "none" if x.move_choice in ("none", "No Move") else \
                         ("tera" if x.move_choice.endswith("-tera") else
@@ -119,7 +122,9 @@ class SearchPolicy:
                     bad.append(x.move_choice)
             if bad and self.debug_path:
                 self._debug(battle, mask, state, r, bad)
-        self.last = {"shares": dict(shares), "iterations": iters, "samples": n, "value": value}
+        # q: each action's mean MCTS score over its visits in all samples (0..1, for side one)
+        self.last = {"shares": dict(shares), "iterations": iters, "samples": n, "value": value,
+                     "q": {a: q_score[a] / q_visits[a] for a in q_visits if q_visits[a]}}
         if self.prior_weight:
             pi = self.net.policy(battle)
             before = max(shares, key=shares.get) if shares else None
