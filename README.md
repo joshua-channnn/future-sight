@@ -10,7 +10,7 @@ Foul Play's default budget (~200 ms per decision), counting actual wins:
 
 | Opponent | Games | Win Rate (95% CI) |
 |----------|-------|-------------------|
-| Foul Play (local, default search) | 500 | 47.4% ± 4.4% |
+| Foul Play (local, default search) | 500 | 47.4% ± 4.4% (with the Phase 2 network pieces, 1,000 games: 47.4% ± 3.1%) |
 | v20 at 20M steps (greedy), both seats | 2,000 | 80.0% ± 1.8% |
 | SimpleHeuristics | 1,000 | 91.5% ± 1.7% |
 

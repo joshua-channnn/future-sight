@@ -59,6 +59,8 @@ async def main():
     parser.add_argument("--early-samples", type=int, default=4)
     parser.add_argument("--early-ms", type=int, default=50)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--config", default="{}",
+                        help="search bot: JSON of further SearchPolicy arguments (eval/search_eval.py --config)")
     args = parser.parse_args()
 
     common = dict(
@@ -71,8 +73,17 @@ async def main():
         max_concurrent_battles=1,
     )
     if args.model == "search":
-        policy = SearchPolicy(samples=args.samples, ms=args.ms, early_samples=args.early_samples,
-                              early_ms=args.early_ms, seed=args.seed)
+        import json
+        cfg = dict(samples=args.samples, ms=args.ms, early_samples=args.early_samples,
+                   early_ms=args.early_ms, seed=args.seed)
+        cfg.update(json.loads(args.config))
+        if cfg.pop("net", False) or cfg.get("prior_weight") or cfg.get("set_gamma") or \
+                (cfg.get("algo") == "emm" and cfg.get("worst_weight", 1.0) < 1):
+            import torch
+            torch.set_num_threads(1)
+            from search.net import NetModel
+            cfg["net"] = NetModel()
+        policy = SearchPolicy(**cfg)
         player = SearchPlayer(policy=policy, hold_requests=True, **common)
     elif args.model.endswith(".pt"):
         # this local Showdown fork sends each request before the turn's log
@@ -80,7 +91,8 @@ async def main():
     else:
         player = PPOPlayer(model_path=args.model, data_dir="data", deterministic=True, **common)
 
-    print(f"Challenging {args.opponent} to {args.games} gen9randombattle games with {args.model}...")
+    print(f"Challenging {args.opponent} to {args.games} gen9randombattle games with {args.model}"
+          f"{' ' + args.config if args.model == 'search' else ''}...")
     # Foul Play plays one battle at a time and ignores challenges that arrive mid-battle, while
     # send_challenges(n) fires the next challenge as soon as a battle starts. Challenge one at a time.
     for game in range(1, args.games + 1):

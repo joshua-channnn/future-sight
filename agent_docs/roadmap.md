@@ -1,6 +1,13 @@
 # Roadmap (from the September 2026 review)
 
 ## Where things stand
+- **Step 6 (search at decision time) is done: the best bot is now the search bot** (`step6.md`,
+  `search/`). poke-engine MCTS over opponent teams sampled from the fork's own generator, Foul
+  Play's recipe in our own code, at Foul Play's default budget: 47.4% ± 4.4% vs Foul Play (v20:
+  13.5%), 80.0% ± 1.8% vs v20, 91.5% ± 1.7% vs SimpleHeuristics. Putting v21 in the loop (policy
+  prior, hidden-set model, opponent model) adds little: the best combination wins 55.8% vs the Phase
+  1 bot head-to-head but stays at 47.4% ± 3.1% vs Foul Play over 1,000 games. Step 5 (cloud
+  scale-out) wasn't done: step 6 was chosen over it.
 - **Step 4 is done, with no gain** (`v21.md`). v21 (v20's tokens plus 16 battle-history tokens, a
   3-layer d=128 transformer, auxiliary heads for the opponent's hidden set and next action), from
   scratch with v20's settings, is level with v20 at equal steps: 48.1% ± 2.2% head-to-head vs v20
@@ -107,12 +114,13 @@
    (level with v20), no aux losses level (after a 1.2M-step stall), half the LR clearly worse
    (43% vs v21) despite a v20-like start. Nothing got past v20.
 5. Scale out on a many-core cloud machine (~2 cores per env), with the PPO update on a GPU.
-6. Next (chosen over step 5 on October 9, 2026; brief in `step6_brief.md`, approved): search at
+6. Done (October 9-10, 2026; `step6.md`; chosen over step 5, brief in `step6_brief.md`): search at
    decision time. Phase 1, a Foul Play-style bot of our own on poke-engine (MIT): our converter
    from poke-env battles to engine states, opponent sets sampled from the fork's own generator,
    MCTS per sample. Phase 2, the network in the loop: policy prior, v21's aux heads for the hidden
    sets, its next-action head as the opponent model. Search added about 100-150 Elo on top of
-   Jaxcalibur's network; Foul Play's search alone is ~300 Elo above v20.
+   Jaxcalibur's network; Foul Play's search alone is ~300 Elo above v20. Result: Phase 1 is level
+   with Foul Play (47.4%) and wins 80% vs v20; Phase 2 adds no measurable gain against Foul Play.
 
 Two Wang settings tuned on 3v3 battles, which are half as long, were A/B'd on v20: `clip_range_vf`
 (None only gave a faster start) and `gae_lambda` (0.95 was clearly worse). Results in `v20.md`.

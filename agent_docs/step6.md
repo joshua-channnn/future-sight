@@ -1,8 +1,20 @@
 # Step 6: search at decision time (poke-engine MCTS over sampled opponent teams)
 
-Built from `step6_brief.md` (October 9, 2026). Phase 1 is a Foul Play-style search bot of our own
+Built from `step6_brief.md` (October 9-10, 2026). Phase 1 is a Foul Play-style search bot of our own
 (MIT-clean: Foul Play's GPL code was read as a reference, nothing copied or imported). Phase 2 puts
 the v21 network in the loop.
+
+**Result: the search bot is level with Foul Play and ~300 Elo above v20; the network adds little.**
+- Phase 1 (MCTS over sampled opponent teams, Foul Play's budget): 47.4% ± 4.4% vs Foul Play (500
+  games; v20: 13.5%), 80.0% ± 1.8% vs v20 (2,000), 91.5% ± 1.7% vs SimpleHeuristics (1,000).
+- Phase 2 against the Phase 1 bot (1,000 games each, ±3.1): network prior 0.5 45.4% (hurts), 0.15
+  52.1%; hidden-set model 52.6%; opponent model 50.7% against the same expectiminimax without it
+  (and that expectiminimax is far weaker than MCTS).
+- The final candidate (converter fixes + choice lock + item inference + set model + prior 0.15):
+  55.8% ± 3.1% vs the Phase 1 bot, but 47.4% ± 3.1% vs Foul Play over 1,000 games: no measurable
+  gain against Foul Play.
+- More search: 2.5x the iterations per sample 53.5% vs Phase 1 (~25 Elo); 3x the samples, or always
+  the most visited option, nothing.
 
 ## Files
 - `search/sampling.py`: the set prior (`SetPrior`, from `data/gen9_randbats_set_counts.json`),
@@ -227,12 +239,57 @@ iterations per ms (so several runs could share the Mac), 1,000 games unless note
 |---|---|
 | deterministic: always the most visited option (Phase 1: Foul Play's random pick among options within 75% of the best) | 50.5% ± 3.1% (49.4% / 51.6%) |
 | 3x samples (6 x 100 ms, 12 x 50 ms early: 3x the budget) | 48.0% (seat 1, 300 games, stopped) |
-| 2.5x MCTS iterations per sample (2.5x the budget) | 55.0% ± 4.4% (seat 1, 500 games); seat 2 52% after 100 (stopped) |
+| 2.5x MCTS iterations per sample (2.5x the budget) | 53.5% ± 3.1% (55.0% / 52.0%; seat 2 rerun after the pause) |
 
-More sampled opponent teams don't help; more search per team helps a little.
+More sampled opponent teams don't help; more search per team helps a little (2.5x the iterations:
++3.5 points, ~25 Elo).
 
 Stopped on October 9 at 16:12 (paused at the user's request; the eval scripts can't resume, so these
 restart from scratch), partial: the combined Phase 2 bot ((a) 0.15 + (b)) 49.6% after 250 games of
 seat 1; the choice-lock fix vs the same bot without it 48.7% after 300; the final candidate (both,
 plus the locks and Boots inference) vs Phase 1 without the choice lock 48.0% after 50. Not run yet:
 Phase 2 against Foul Play.
+
+### The final candidate against Foul Play (October 9, 2026)
+Everything together (the converter fixes, `lock_choice`, `infer_items`, the aux-head set model at
+gamma 0.5, the network prior at 0.15), Foul Play's budget, wall clock, alone on the Mac:
+**235/500 = 47.0% ± 4.4%**, and in a second run (after the head-to-heads below) **239/500 = 47.8%**:
+**474/1,000 = 47.4% ± 3.1%**, the same as the Phase 1 bot's 47.4% (500 games). Latency mean 240 ms,
+p95 255 ms, max 503 ms; MCTS median 61-63K iterations per sample; no fallbacks to the first legal
+action (Phase 1: 2, from the stale must-recharge). Neither the network nor the fixes move the number
+against Foul Play measurably.
+
+### The final candidate against the Phase 1 bot (October 9, rerun after the pause)
+Same setup as the A/Bs above, against the Phase 1 bot with the converter fixes but without the
+choice lock: **558/1,000 = 55.8% ± 3.1%** (seat 1: 272/500 = 54.4%, in two parts after an
+`EnvTimeout` crash at 250 games; seat 2: 286/500 = 57.2%). A gain of ~40 Elo head-to-head, outside
+the noise, that the 500 games against Foul Play can't resolve (47.0% vs 47.4%, ±4.4 each).
+
+The crash: poke-engine's Python bindings hold the GIL during a search, so a pathologically slow
+fixed-iteration search on a loaded Mac starves poke-env's websocket thread (one 63 s decision was
+seen). Wall-clock searches stop after their ~100 ms, so live play isn't affected; a fix would be
+`py.allow_threads` around the search in the bindings.
+
+### Ablations of the final candidate (October 9)
+| Variant | vs the same bot without it |
+|---|---|
+| `lock_choice` (the opponent's choice lock) | 51.0% ± 3.1% (49.8% / 52.2%) |
+| `infer_items` (incl. Boots) | 54.5% (seat 1, 200 games; stopped for the Foul Play run) |
+
+Neither the choice lock nor any single network piece is clearly worth points on its own; together
+(with the rule-based item inference, which may carry most of it) they are worth ~6.
+
+## What next (not decided)
+- **Deploy the search bot** on the ladder / play bots (they still run v18.3 and v18.2; milestone 6
+  of the brief: ask first). It beats v20 80-20 at ~240 ms per decision; the ladder's clock allows
+  far more time, and more iterations per sample are worth a little (+3.5 points at 2.5x), so it
+  could run with a bigger budget or several MCTS threads (`threads`).
+- **The network's value at the leaves** (the brief's "later" item, AlphaZero-style): the only big
+  idea left for search + network. The policy prior and the opponent model barely help because v21
+  plays ~300 Elo below the search; its value head is a different signal, but it needs features from
+  engine states (a featurizer for poke-engine states or poke-env battles rebuilt from them). Large.
+- **Engine mechanics** the fidelity check found (simultaneous switches always side one first, 2-5 hit
+  moves always 3 hits, Rest at full HP, Sheer Force + Life Orb, Heal Block, Intrepid Sword, residual
+  order): fixing them in our build would be an edge Foul Play doesn't have, of unknown size.
+- **Releasing the GIL during searches** (`py.allow_threads` in the bindings) would make fixed-
+  iteration evals robust (one crashed with `EnvTimeout` after a 63 s search on a loaded Mac).
