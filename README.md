@@ -82,6 +82,8 @@ python -m players.play_bot
 ```
 
 Open `http://localhost:8000` in your browser and challenge `MyPPOBot` to a Gen 9 Random Battle.
+It's the search bot (`search/`, ~0.6 s per decision); `--model models/<an SB3 zip or a .pt>` plays an
+older model instead.
 
 ### Run on the Pokemon Showdown ladder
 
@@ -89,7 +91,9 @@ Open `http://localhost:8000` in your browser and challenge `MyPPOBot` to a Gen 9
 python -m players.ladder_bot
 ```
 
-Edit `players/ladder_bot.py` to set your username, password, and number of games. Connects to the public Showdown server and queues for ranked Gen 9 Random Battles.
+Edit `players/ladder_bot.py` to set your username and password; `--games N` sets the number of games
+and `--model` an older model instead of the search bot. Connects to the public Showdown server and
+queues for ranked Gen 9 Random Battles.
 
 ### Evaluate against bots
 

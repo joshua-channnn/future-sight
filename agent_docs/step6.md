@@ -279,11 +279,16 @@ seen). Wall-clock searches stop after their ~100 ms, so live play isn't affected
 Neither the choice lock nor any single network piece is clearly worth points on its own; together
 (with the rule-based item inference, which may carry most of it) they are worth ~6.
 
+## Deployed (October 10, 2026, with the user's OK)
+`players/ladder_bot.py` and `players/play_bot.py` run the search bot by default (`make_player`), with
+the final candidate's settings at 2.5x Foul Play's budget (2 x 250 ms per decision, ~0.6 s with the
+network; +3.5 points measured for 2.5x the iterations), no request hold on the public server;
+`--model <SB3 zip or .pt>` brings back the old models. Checked locally (3 games vs SimpleHeuristics,
+the record keeping, the old models' players still build); not run on the public ladder yet. Its set
+prior is the Feb 2026 fork's: for the ladder, a prior from current Showdown's generator would match
+its sets better (`tools/build_set_prior.py --showdown <a current checkout>`).
+
 ## What next (not decided)
-- **Deploy the search bot** on the ladder / play bots (they still run v18.3 and v18.2; milestone 6
-  of the brief: ask first). It beats v20 80-20 at ~240 ms per decision; the ladder's clock allows
-  far more time, and more iterations per sample are worth a little (+3.5 points at 2.5x), so it
-  could run with a bigger budget or several MCTS threads (`threads`).
 - **The network's value at the leaves** (the brief's "later" item, AlphaZero-style): the only big
   idea left for search + network. The policy prior and the opponent model barely help because v21
   plays ~300 Elo below the search; its value head is a different signal, but it needs features from

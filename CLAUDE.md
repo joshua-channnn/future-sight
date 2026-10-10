@@ -53,7 +53,8 @@ v17-v19 (SB3):
 - `networks/embedding_extractor_v18.py`: feature extractor (embeddings, per-Pokémon encoder, pooling).
 - `training/ppo_embed_train_selfplay.py`: the only training script; all settings live in `CONFIG`.
 - `players/ppo_player.py`: loads any saved model (env/extractor chosen via `ARCH_REGISTRY`). Used
-  for self-play opponents, `players/play_bot.py` (local play) and `players/ladder_bot.py`.
+  for self-play opponents and, with `--model <zip>`, `players/play_bot.py` (local play) and
+  `players/ladder_bot.py` (both run the step 6 search bot by default since October 10, 2026).
 - `eval/ppo_test.py` (vs Random / SimpleHeuristics / another model) and `eval/foulplay_eval.py`.
 - `envs/rl_player_6v6.py`, `networks/embedding_extractor.py`, `networks/embedding_extractor_sp.py`:
   v17 code, kept only so v17 checkpoints still load.
