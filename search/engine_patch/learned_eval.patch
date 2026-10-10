@@ -146,10 +146,10 @@ index 3b173fe..e60adc8 100644
  
 diff --git a/src/genx/learned.rs b/src/genx/learned.rs
 new file mode 100644
-index 0000000..68d5ae2
+index 0000000..4517b52
 --- /dev/null
 +++ b/src/genx/learned.rs
-@@ -0,0 +1,437 @@
+@@ -0,0 +1,449 @@
 +//! A learned leaf evaluation for MCTS (pokemon-rl, step 7): features of a state and a small
 +//! antisymmetric model on them, v(state) = g(x) - g(swap(x)), the logit of side one winning.
 +//! x = [side features of side one, of side two, cross features]; swap(x) exchanges the two
@@ -482,7 +482,19 @@ index 0000000..68d5ae2
 +}
 +
 +fn dot(a: &[f32], b: &[f32]) -> f32 {
-+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
++    // 8 independent sums, so the compiler vectorizes it
++    let mut acc = [0f32; 8];
++    let (ca, cb) = (a.chunks_exact(8), b.chunks_exact(8));
++    let mut s = 0.0;
++    for (x, y) in ca.remainder().iter().zip(cb.remainder()) {
++        s += x * y;
++    }
++    for (x, y) in ca.zip(cb) {
++        for i in 0..8 {
++            acc[i] += x[i] * y[i];
++        }
++    }
++    s + acc.iter().sum::<f32>()
 +}
 +
 +/// g(x) = w2 . relu(W1 x + b1) (hidden > 0) or w . x (hidden 0); v = g(x) - g(swap(x)).
