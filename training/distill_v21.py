@@ -8,8 +8,14 @@ The data doesn't fit in memory (~4 KB per sample), so each epoch streams the tra
 random order, --chunk shards at a time shuffled together (the next chunk loads in a background
 thread). Every minibatch has --batch samples (MPS compiles a graph per shape).
 
+--target mix / qadv (policy_target) train toward the visit shares mixed with the starting network's
+policy, or toward the starting policy reweighted by the search's per-action values: conservative
+variants, for when plain imitation makes the network play worse (agent_docs/step7.md).
+
 Validation metrics: policy cross-entropy and KL to the visit shares, top-1 agreement with the most
-visited action, value MSE against the outcome and its sign accuracy, aux losses and accuracies; the
+visited action, the greedy pick's regret by the search's own per-action values (q of the best
+visited action minus q of the pick; an unvisited pick counts 0), value MSE against the outcome and
+its sign accuracy, aux losses and accuracies; the
 starting weights are scored first, as the baseline. Checkpoints are v21 checkpoints (V20Policy.load,
 eval/ppo_test.py, search.net.NetModel load them): <out>_best.pt (lowest validation loss), <out>.pt
 (the last), <out>_epoch<k>.pt.
@@ -32,7 +38,7 @@ import torch.nn.functional as F
 
 from networks.v21_policy import AUX_HEADS, aux_obs, aux_terms, build_from_checkpoint
 
-FIELDS = ("idx", "flt", "mask", "target", "outcome", "lab", "value", "action")
+FIELDS = ("idx", "flt", "mask", "target", "outcome", "lab", "value", "action", "q")
 AUX_COEFS = {"next": 0.1, "item": 0.05, "ability": 0.05, "tera": 0.05, "moves": 0.05}   # as PPO's CONFIG
 
 
@@ -80,15 +86,40 @@ def to_device(b, device):
     return (torch.as_tensor(b["idx"]).to(device).long(), torch.as_tensor(b["flt"]).to(device).float(),
             torch.as_tensor(b["mask"]).to(device), torch.as_tensor(b["target"]).to(device),
             torch.as_tensor(b["outcome"]).to(device).float(), torch.as_tensor(b["lab"]).to(device).long(),
-            torch.as_tensor(b["value"]).to(device), torch.as_tensor(b["action"]).to(device).long())
+            torch.as_tensor(b["value"]).to(device), torch.as_tensor(b["action"]).to(device).long(),
+            torch.as_tensor(b["q"]).to(device))
 
 
-def compute(model, b, cfg, metrics=False):
-    """Loss terms (and with metrics, sums for the validation report) for one minibatch."""
-    idx, flt, mask, target, z, lab, sv, act = b
+@torch.no_grad()
+def policy_target(b, cfg, ref):
+    """The policy target of a minibatch: the visit shares ("shares"); their mix with the starting
+    network's policy ("mix": (1 - mix) shares + mix ref); or the starting policy reweighted by the
+    search's per-action values ("qadv": ref * exp(beta * (q - max q)), unvisited actions at the
+    lowest visited q), a KL-regularized improvement step on the starting network."""
+    idx, flt, mask, target, _, _, _, _, q = b
+    if cfg["target"] == "shares":
+        return target
+    pref = F.softmax(ref(idx, flt, mask)[0], -1)
+    if cfg["target"] == "mix":
+        return (1 - cfg["mix"]) * target + cfg["mix"] * pref
+    visited = ~torch.isnan(q)
+    qmax = torch.where(visited, q, torch.full_like(q, -1.0)).max(-1, keepdim=True).values
+    qmin = torch.where(visited, q, torch.full_like(q, 2.0)).min(-1, keepdim=True).values
+    qf = torch.where(visited, q, qmin.expand_as(q))
+    w = pref * torch.exp(cfg["beta"] * (qf - qmax)) * mask
+    return w / w.sum(-1, keepdim=True).clamp(min=1e-12)
+
+
+def compute(model, b, cfg, metrics=False, ref=None):
+    """Loss terms (and with metrics, sums for the validation report) for one minibatch. The policy
+    loss is to policy_target (needs ref, the starting network, unless --target shares); the
+    validation metrics compare with the visit shares."""
+    idx, flt, mask, target, z, lab, sv, act, q = b
     logits, value, aux = model(idx, flt, mask, aux=True)
+    pt = target if ref is None else policy_target(b, cfg, ref)
     logp = F.log_softmax(logits, -1)
-    ce = -(target * logp).sum(-1)
+    ce_t = -(pt * logp).sum(-1)
+    ce = ce_t if pt is target else -(target * logp).sum(-1)
     if cfg["value_target"] == "mix":   # the outcome and the search's root value (0..1 -> -1..1)
         vt = 0.5 * z + 0.5 * (2 * sv - 1)
     else:
@@ -96,7 +127,7 @@ def compute(model, b, cfg, metrics=False):
     v_loss = (value - vt) ** 2
     obs = aux_obs(idx, flt, model.layout)
     al, mets = aux_terms(aux, lab, obs, metrics=metrics)
-    loss = ce.mean() + cfg["value_coef"] * v_loss.mean() + sum(cfg["aux_coefs"][h] * al[h] for h in AUX_HEADS)
+    loss = ce_t.mean() + cfg["value_coef"] * v_loss.mean() + sum(cfg["aux_coefs"][h] * al[h] for h in AUX_HEADS)
     out = {"loss": loss, "policy_ce": ce.mean(), "value_mse": v_loss.mean(), **{f"aux_{h}": al[h] for h in AUX_HEADS}}
     if metrics:
         with torch.no_grad():
@@ -113,6 +144,12 @@ def compute(model, b, cfg, metrics=False):
                  "value_mse_z": ((value - z) ** 2).sum(),
                  "value_sign": ((value > 0) == (z > 0)).float().mul(dec).sum(), "n_dec": dec.float().sum(),
                  "search_value_sign": ((sv > 0.5) == (z > 0)).float().mul(dec).sum()}
+            # regret of the greedy pick by the search's own per-action values
+            qa = q.gather(-1, top_p[:, None]).squeeze(-1)
+            qbest = torch.where(torch.isnan(q), torch.full_like(q, -1.0), q).max(-1).values
+            reg = torch.where(torch.isnan(qa), torch.zeros_like(qa), qbest - qa)
+            s["regret"] = reg.sum()
+            s["regret_big"] = (reg > 0.05).float().sum()
             for h in AUX_HEADS:
                 s[f"aux_{h}"] = al[h] * len(z)
             for name, (c, n) in mets.items():
@@ -131,7 +168,7 @@ def validate(model, val, cfg, device, batch):
             tot[k] += float(v)
     model.train()
     n = max(tot["n"], 1)
-    r = {k: tot[k] / n for k in ("policy_ce", "kl", "top1", "p_top", "p_played", "value_mse_z")}
+    r = {k: tot[k] / n for k in ("policy_ce", "kl", "top1", "p_top", "p_played", "value_mse_z", "regret", "regret_big")}
     r["value_sign"] = tot["value_sign"] / max(tot["n_dec"], 1)
     r["search_value_sign"] = tot["search_value_sign"] / max(tot["n_dec"], 1)
     for h in AUX_HEADS:
@@ -146,7 +183,8 @@ def validate(model, val, cfg, device, batch):
 
 def fmt(r):
     return (f"loss {r['loss']:.4f} | policy CE {r['policy_ce']:.4f} KL {r['kl']:.4f} top-1 {r['top1']:.1%} "
-            f"p(top) {r['p_top']:.3f} p(played) {r['p_played']:.3f} | value MSE {r['value_mse_z']:.4f} sign "
+            f"p(top) {r['p_top']:.3f} p(played) {r['p_played']:.3f} regret {r['regret']:.4f} "
+            f"(>0.05 {r['regret_big']:.1%}) | value MSE {r['value_mse_z']:.4f} sign "
             f"{r['value_sign']:.1%} (search's root value {r['search_value_sign']:.1%}) | aux "
             + " ".join(f"{h} {r[f'aux_{h}']:.3f}" for h in AUX_HEADS)
             + f" | acc next {r.get('acc_next', float('nan')):.3f} item {r.get('acc_item_unrev', float('nan')):.3f} "
@@ -186,6 +224,9 @@ def main():
     ap.add_argument("--clip", type=float, default=1.0)
     ap.add_argument("--value-coef", type=float, default=0.5)
     ap.add_argument("--value-target", choices=["outcome", "mix"], default="outcome")
+    ap.add_argument("--target", choices=["shares", "mix", "qadv"], default="shares", help="policy target (policy_target)")
+    ap.add_argument("--mix", type=float, default=0.5, help="--target mix: weight of the starting policy")
+    ap.add_argument("--beta", type=float, default=30.0, help="--target qadv: inverse temperature on q")
     ap.add_argument("--aux-scale", type=float, default=1.0, help="multiplies PPO's aux coefficients")
     ap.add_argument("--val-mod", type=int, default=20)
     ap.add_argument("--val-max", type=int, default=150_000, help="validation samples (whole shards)")
@@ -220,19 +261,26 @@ def main():
             n_train += int(d["searched"].sum())
     steps_per_epoch = max(1, n_train // args.batch)   # each chunk drops its last partial batch: epochs are approximate
     total = int(args.epochs * steps_per_epoch)
-    cfg = {"value_coef": args.value_coef, "value_target": args.value_target,
-           "aux_coefs": {h: c * args.aux_scale for h, c in AUX_COEFS.items()}}
+    cfg = {"value_coef": args.value_coef, "value_target": args.value_target, "target": args.target,
+           "mix": args.mix, "beta": args.beta, "aux_coefs": {h: c * args.aux_scale for h, c in AUX_COEFS.items()}}
 
     ckpt = torch.load(args.init, map_location="cpu", weights_only=False)
     model = build_from_checkpoint(ckpt).to(device)
     model.train()
+    ref = None
+    if args.target != "shares":   # the starting network, frozen
+        ref = build_from_checkpoint(ckpt).to(device).eval()
+        for prm in ref.parameters():
+            prm.requires_grad_(False)
     emb = model.embedding_parameters()
     groups = [{"params": emb, "lr_mult": args.embed_lr_mult}, {"params": model.other_parameters(), "lr_mult": 1.0}]
     opt = torch.optim.AdamW(groups, lr=args.lr, weight_decay=args.wd)
     print(f"Distill v21 from {args.init} | train {len(train)} shards, {n_train:,} searched samples | validation "
           f"{len(val_sel)} shards, {len(val['action']):,} samples | {args.epochs} epochs x {steps_per_epoch:,} steps of "
           f"{args.batch} | lr {args.lr} (embeddings x{args.embed_lr_mult}) warmup {args.warmup} cosine to "
-          f"{args.lr_final} | wd {args.wd} | value coef {args.value_coef} ({args.value_target}) | aux "
+          f"{args.lr_final} | wd {args.wd} | target {args.target}"
+          f"{f' {args.mix}' if args.target == 'mix' else (f' beta {args.beta}' if args.target == 'qadv' else '')} | "
+          f"value coef {args.value_coef} ({args.value_target}) | aux "
           f"{cfg['aux_coefs']} | {device}", flush=True)
 
     def lr_at(step):
@@ -259,7 +307,7 @@ def main():
             lr = lr_at(step)
             for g in opt.param_groups:
                 g["lr"] = lr * g["lr_mult"]
-            out = compute(model, to_device(b, device), cfg)
+            out = compute(model, to_device(b, device), cfg, ref=ref)
             opt.zero_grad(set_to_none=True)
             out["loss"].backward()
             gn = torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
