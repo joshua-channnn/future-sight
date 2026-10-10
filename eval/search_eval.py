@@ -9,7 +9,8 @@ Against Foul Play: eval/foulplay_eval.py --model search.
         --budget-iters-per-ms 600 --battles 500 --seat both --port 8123
 
 --config / --opp-config: JSON of SearchPolicy arguments for our bot / the opponent search bot
-(Phase 1 defaults when empty); "net": true loads v21 (search/net.py).
+(Phase 1 defaults when empty); "net": true loads v21 (search/net.py); "net_path": "<a v21 .pt>" uses
+that network instead (e.g. a distilled one, training/distill_v21.py).
 
 The search runs for a fixed wall-clock time per decision: run one eval at a time on an otherwise idle
 Mac, or the budget buys fewer iterations.
@@ -33,14 +34,17 @@ def make_policy(args, config, seed):
                threads=args.threads, deterministic=args.deterministic, seed=seed,
                iters_per_ms=args.budget_iters_per_ms)
     cfg.update(config)
-    if cfg.pop("net", False) or cfg.get("prior_weight") or cfg.get("set_gamma") or \
+    path = cfg.pop("net_path", None)
+    if cfg.pop("net", False) or path or cfg.get("prior_weight") or cfg.get("set_gamma") or \
             (cfg.get("algo") == "emm" and cfg.get("worst_weight", 1.0) < 1):
-        if "net" not in _NET:
+        from search.net import V21_PATH
+        path = path or V21_PATH
+        if path not in _NET:
             import torch
             torch.set_num_threads(1)  # batch-1 inference; several evals share the Mac
             from search.net import NetModel
-            _NET["net"] = NetModel()
-        cfg["net"] = _NET["net"]
+            _NET[path] = NetModel(path)
+        cfg["net"] = _NET[path]
     return SearchPolicy(**cfg)
 
 
