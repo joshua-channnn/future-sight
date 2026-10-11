@@ -21,6 +21,9 @@ Snow -> Snowscape rename in fp/battle/protocol.py.
      python -m eval.foulplay_eval --games 100 --port 8005 --opponent FoulPlayLocal7291
    --model takes a v20 checkpoint (.pt, the default), an SB3 zip (v17-v19), or "search" for the
    search bot (search/policy.py; --samples / --ms set its budget, Foul Play's default by default).
+Foul Play's engine panics now and then ("Invalid PokemonIndex: 6", about once per 500 games) and
+its container exits; the script then stops after --game-timeout with the games so far.
+tools/foulplay_loop.sh restarts Foul Play until a number of games have finished.
 """
 import argparse
 import asyncio
@@ -96,7 +99,12 @@ async def main():
     # Foul Play plays one battle at a time and ignores challenges that arrive mid-battle, while
     # send_challenges(n) fires the next challenge as soon as a battle starts. Challenge one at a time.
     for game in range(1, args.games + 1):
-        await player.send_challenges(args.opponent, n_challenges=1)
+        try:   # a challenge to a user who left (Foul Play crashed) is never answered
+            await asyncio.wait_for(player.send_challenges(args.opponent, n_challenges=1), args.game_timeout)
+        except asyncio.TimeoutError:
+            print(f"Challenge {game} wasn't accepted within {args.game_timeout}s (is Foul Play still running?); "
+                  f"stopping early.", flush=True)
+            break
         if not await wait_for_battles(player, game, args.game_timeout):
             print(f"Game {game} didn't finish within {args.game_timeout}s "
                   f"(is Foul Play still running?); stopping early.")
