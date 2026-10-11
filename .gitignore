@@ -1,6 +1,9 @@
 models/*
 !models/ppo_pokemon_6v6_v18.3_best.zip
 !models/ppo_pokemon_6v6_v20.pt
+!models/leaf_eval/
+models/leaf_eval/*
+!models/leaf_eval/lin1_86.npz
 logs/
 __pycache__/
 *.pyc

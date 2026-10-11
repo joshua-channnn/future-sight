@@ -5,7 +5,9 @@
 
 --model: "search" (default), an SB3 zip (v17-v19) or a v20/v21 .pt. The search bot plays with the
 settings that measured best in step 6 (agent_docs/step6.md: the v21 network's prior and set model,
-item inference) at 2.5x Foul Play's budget (2 x 250 ms per decision; the ladder clock allows far more).
+item inference) and step 7's learned leaf evaluation (agent_docs/step7.md; the hand-written one if
+the engine build or the weights are missing) at 2.5x Foul Play's budget (2 x 250 ms per decision;
+the ladder clock allows far more).
 Its set prior comes from the Feb 2026 Showdown fork's generator; the public server's sets may have
 changed since (unmatched sets fall back to the closest ones, unknown species to stand-in sets).
 """
@@ -51,6 +53,7 @@ def make_player(model="search", hold_requests=False, **kwargs):
     if model == "search":
         import torch
         torch.set_num_threads(1)
+        from search.leaf_eval import best_settings
         from search.net import NetModel
         from search.policy import SearchPlayer, SearchPolicy
 
@@ -58,7 +61,7 @@ def make_player(model="search", hold_requests=False, **kwargs):
             pass
 
         policy = SearchPolicy(samples=2, ms=250, early_samples=4, early_ms=125, prior_weight=0.15,
-                              set_gamma=0.5, infer_items=True, net=NetModel())
+                              set_gamma=0.5, infer_items=True, net=NetModel(), **best_settings())
         return LadderSearchPlayer(policy=policy, hold_requests=hold_requests, **kwargs)
     if model.endswith(".pt"):
         from players.v20_player import V20Player

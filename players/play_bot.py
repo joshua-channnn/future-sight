@@ -1,6 +1,6 @@
 """A bot on the local Showdown server that accepts any challenge (to play against it yourself).
 
-    python3 -m players.play_bot                                   # the search bot (step 6)
+    python3 -m players.play_bot                                   # the search bot (steps 6-7)
     python3 -m players.play_bot --model models/ppo_pokemon_6v6_v18.2
 
 --model: "search" (default; the same settings as players/ladder_bot.py), an SB3 zip or a v20/v21 .pt.

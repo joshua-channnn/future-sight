@@ -8,14 +8,30 @@ training/train_leaf_eval.py (an .npz: hidden, w1, b1, w2, feature names; standar
 folded in). Leaf scores: mode 1 sigmoid(v); mode 2 sigmoid(scale * (v - v(root))), like the
 hand-written evaluation's sigmoid(0.0125 * (eval - root eval)).
 """
+import os
+
 import numpy as np
 import poke_engine as pe
 
+BEST = "models/leaf_eval/lin1_86.npz"   # the evaluator of agent_docs/step7.md's results
 _IDS = {}
 
 
 def has_engine_support():
     return hasattr(pe, "mcts_with")
+
+
+def best_settings(path=BEST):
+    """SearchPolicy arguments for the best learned evaluation, or {} (the engine's hand-written
+    evaluation, with a warning) when this engine build lacks it or `path` is missing."""
+    if not has_engine_support():
+        print("poke-engine has no learned evaluation (bash search/engine_patch/build.sh): "
+              "the search uses the hand-written one")
+        return {}
+    if not os.path.exists(path):
+        print(f"{path} not found: the search uses the hand-written evaluation")
+        return {}
+    return {"leaf_eval": path, "leaf_mode": 2, "leaf_scale": 1.4}
 
 
 def load_weights(path):
