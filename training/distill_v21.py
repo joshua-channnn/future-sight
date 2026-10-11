@@ -42,11 +42,12 @@ FIELDS = ("idx", "flt", "mask", "target", "outcome", "lab", "value", "action", "
 AUX_COEFS = {"next": 0.1, "item": 0.05, "ability": 0.05, "tera": 0.05, "moves": 0.05}   # as PPO's CONFIG
 
 
-def split_shards(path, val_mod):
-    files = sorted(glob.glob(os.path.join(path, "*.npz")))
+def split_shards(paths, val_mod):
+    """Shards of the directories `paths` (a list, or one path): (train, validation)."""
+    paths = [paths] if isinstance(paths, str) else paths
+    files = sorted(f for p in paths for f in glob.glob(os.path.join(p, "*.npz")))
     val = [f for f in files if zlib.crc32(os.path.basename(f).encode()) % val_mod == 0]
-    train = [f for f in files if f not in set(val)]
-    return train, val
+    return [f for f in files if f not in set(val)], val
 
 
 def load_shard(path):
@@ -211,7 +212,7 @@ def wait_for_power():
 
 def main():
     ap = argparse.ArgumentParser(description="Distill the search into v21 (agent_docs/step7_brief.md, step 2)")
-    ap.add_argument("--data", default="datasets/search_selfplay")
+    ap.add_argument("--data", nargs="+", default=["datasets/search_selfplay"], help="shard directories")
     ap.add_argument("--init", default="models/ppo_pokemon_6v6_v21.pt")
     ap.add_argument("--out", default="models/v21_distill", help="checkpoint path prefix")
     ap.add_argument("--epochs", type=float, default=4.0)

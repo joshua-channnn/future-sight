@@ -30,8 +30,10 @@ from search.leaf_eval import has_engine_support
 TURN_BUCKETS = ((1, 5), (6, 15), (16, 30), (31, 10_000))
 
 
-def split_shards(path, val_mod):
-    files = sorted(glob.glob(os.path.join(path, "*.npz")))
+def split_shards(paths, val_mod):
+    """Shards of the directories `paths` (a list, or one path): (train, validation)."""
+    paths = [paths] if isinstance(paths, str) else paths
+    files = sorted(f for p in paths for f in glob.glob(os.path.join(p, "*.npz")))
     val = [f for f in files if zlib.crc32(os.path.basename(f).encode()) % val_mod == 0]
     return [f for f in files if f not in set(val)], val
 
@@ -150,7 +152,7 @@ def fit_scale(e, y, iters=50):
 
 def main():
     ap = argparse.ArgumentParser(description="Train the learned leaf evaluation (step 7, step 3)")
-    ap.add_argument("--data", default="datasets/search_selfplay")
+    ap.add_argument("--data", nargs="+", default=["datasets/search_selfplay"], help="shard directories")
     ap.add_argument("--out", default="models/leaf_eval_linear.npz")
     ap.add_argument("--hidden", type=int, default=0, help="0: linear; else one ReLU layer of this size")
     ap.add_argument("--keep", type=float, default=0.5, help="fraction of the training states used")
