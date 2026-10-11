@@ -1,6 +1,15 @@
 # Roadmap (from the September 2026 review)
 
 ## Where things stand
+- **Step 7 (learning from the search) is done: a learned leaf evaluation is the gain** (`step7.md`).
+  The search bot played itself (16K games, 1.1M decisions recorded with visit shares, values and
+  engine states). A linear model of 110 engine-state features, fit to the results and used by the
+  MCTS at the leaves in place of Foul Play's hand-written evaluation, wins 53.6% ± 2.2% against
+  step 6's best bot (2,000 games) and 50.9% ± 3.1% vs Foul Play (1,000; step 6: 47.4%); the ladder
+  and play bots use it. Distilling the search into v21 gave the network ~2 points with a target
+  anchored to v21 (52.0% ± 2.2% vs v21) and made it weaker with plain imitation (44.2% vs v20);
+  distilled networks inside the search lost ~2.5. A second round of the loop (the new bot's games,
+  a refit) gave nothing (50.1% ± 2.2%): the linear model is saturated.
 - **Step 6 (search at decision time) is done: the best bot is now the search bot** (`step6.md`,
   `search/`). poke-engine MCTS over opponent teams sampled from the fork's own generator, Foul
   Play's recipe in our own code, at Foul Play's default budget: 47.4% ± 4.4% vs Foul Play (v20:
@@ -121,6 +130,13 @@
    sets, its next-action head as the opponent model. Search added about 100-150 Elo on top of
    Jaxcalibur's network; Foul Play's search alone is ~300 Elo above v20. Result: Phase 1 is level
    with Foul Play (47.4%) and wins 80% vs v20; Phase 2 adds no measurable gain against Foul Play.
+7. Done (October 10-11, 2026; `step7.md`, brief in `step7_brief.md`): learning from the search.
+   Search self-play data, distillation into v21 (~2 points for the network alone, a loss inside the
+   search), a learned leaf evaluation in the engine (+3.6 points vs step 6's bot, level with Foul
+   Play), one more round of the AlphaZero loop (no gain with a linear model).
+8. Next (`step7.md` section 5): a matchup-aware leaf evaluation (a small network sets per-Pokémon
+   weights once per search, the leaves stay linear), then more rounds of the loop; a finer sweep of
+   the leaf scale on the side.
 
 Two Wang settings tuned on 3v3 battles, which are half as long, were A/B'd on v20: `clip_range_vf`
 (None only gave a faster start) and `gae_lambda` (0.95 was clearly worse). Results in `v20.md`.

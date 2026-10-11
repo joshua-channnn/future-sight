@@ -38,12 +38,25 @@ Step 6 (search at decision time, details in `agent_docs/step6.md`):
   checks, `LogTracker` for what poke-env doesn't keep), engine options -> our 14 actions.
 - `search/policy.py`: `SearchPolicy` (MCTS over sampled opponent teams, Foul Play's recipe; same
   interface as `V20Policy`), `SearchPlayer` (live play). `search/net.py`: v21 in the loop (Phase 2).
-- poke-engine is 0.0.48 built with gen9 + Terastallization and one added binding
-  (`search/engine_patch/`, `bash search/engine_patch/build.sh`); `pip install poke-engine==0.0.46`
-  undoes it.
+- poke-engine is 0.0.48 built with gen9 + Terastallization and two additions (the `emm_matrix`
+  binding, step 6; the learned leaf evaluation, step 7) by `bash search/engine_patch/build.sh`;
+  `pip install poke-engine==0.0.46` undoes it.
 - Evals: `python3 -m eval.search_eval --opponents simple|model|search ...`,
   `python3 -m eval.foulplay_eval --model search ...`. Checks: `tools/check_engine_build.py`,
   `tools/check_set_prior.py`, `tools/check_search_state.py`, `tools/check_set_model.py`.
+
+Step 7 (learning from the search, details in `agent_docs/step7.md`):
+- `training/gen_search_games.py`: search self-play data (both sides: visit shares, per-action
+  values, aux labels, the true engine state of every decision) in `datasets/` (gitignored:
+  `search_selfplay/` round 0, `search_selfplay_r1/` round 1); `tools/check_search_games.py` checks
+  shards.
+- `training/distill_v21.py`: distillation into v21 (`--target shares | mix | qadv`).
+- The learned leaf evaluation (+3.6 points vs step 6's bot, level with Foul Play):
+  `search/engine_patch/learned_eval.patch` (state features and an antisymmetric linear model in
+  Rust, used by MCTS at the leaves), `search/leaf_eval.py` (`best_settings()`: the deployed
+  arguments, `leaf_eval="models/leaf_eval/lin1_86.npz", leaf_mode=2, leaf_scale=1.4`; falls back to
+  the hand-written evaluation without the engine patch), `training/train_leaf_eval.py`.
+- `tools/foulplay_loop.sh`: Foul Play evals of the search bot that restart Foul Play when it crashes.
 
 v17-v19 (SB3):
 - `envs/rl_player_6v6_v18.py`: the environment. Observation (677 floats: 12 Pokémon blocks,
@@ -54,15 +67,17 @@ v17-v19 (SB3):
 - `training/ppo_embed_train_selfplay.py`: the only training script; all settings live in `CONFIG`.
 - `players/ppo_player.py`: loads any saved model (env/extractor chosen via `ARCH_REGISTRY`). Used
   for self-play opponents and, with `--model <zip>`, `players/play_bot.py` (local play) and
-  `players/ladder_bot.py` (both run the step 6 search bot by default since October 10, 2026).
+  `players/ladder_bot.py` (both run the search bot by default since October 10, 2026, with step
+  7's learned leaf evaluation since October 11).
 - `eval/ppo_test.py` (vs Random / SimpleHeuristics / another model) and `eval/foulplay_eval.py`.
 - `envs/rl_player_6v6.py`, `networks/embedding_extractor.py`, `networks/embedding_extractor_sp.py`:
   v17 code, kept only so v17 checkpoints still load.
 - `cloud/`: scripts for training on a Google Cloud VM (pack, set up, run with a stall guard, fetch).
 - Outside this repo: `../pokemon-showdown` (local Showdown server, a Feb 2026 fork) and
   `../foul-play` (Foul Play, locally patched, run via Docker).
-- `models/` is gitignored except `ppo_pokemon_6v6_v20.pt` (the best model: v20 at 20M steps) and
-  `ppo_pokemon_6v6_v18.3_best.zip` (the best SB3 model). v20 checkpoints are torch files:
+- `models/` is gitignored except `ppo_pokemon_6v6_v20.pt` (the best model: v20 at 20M steps),
+  `ppo_pokemon_6v6_v18.3_best.zip` (the best SB3 model) and `leaf_eval/lin1_86.npz` (the search
+  bot's leaf evaluation). v20 checkpoints are torch files:
   `models/ppo_pokemon_6v6_<version>_{latest,best}.pt`, pool `models/selfplay_pool_<version>/`,
   eval snapshots `models/eval_snapshots_<version>/`.
 
@@ -112,5 +127,5 @@ v17-v19 (SB3):
   `agent_docs/step4_handoff.md`
 - step 6 (search at decision time on poke-engine, the network as prior, set model and opponent
   model): `agent_docs/step6.md`; the brief it was built from: `agent_docs/step6_brief.md`
-- step 7, the next job (search self-play data, then distilling the search into the network):
-  `agent_docs/step7_brief.md`
+- step 7 (search self-play data, distilling the search into the network, the learned leaf
+  evaluation): `agent_docs/step7.md`; the brief it was built from: `agent_docs/step7_brief.md`

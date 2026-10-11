@@ -44,6 +44,11 @@ at Foul Play's default search settings.
   (`~/Library/Containers/com.docker.docker/Data/log/host/com.docker.backend.log`) shows "no route
   to host" to 192.168.65.7, Docker Desktop's VM didn't come up: quit Docker Desktop
   (`osascript -e 'quit app "Docker Desktop"'`) and open it again.
+- Foul Play's engine panics now and then (`PanicException: Invalid PokemonIndex: 6`, about once
+  per 500 games in October 2026) and the container exits. The script then stops after
+  `--game-timeout` (a challenge to a user who left is never answered) and prints the games so far;
+  `tools/foulplay_loop.sh N PREFIX CONFIG` runs the search bot until N games have finished,
+  restarting Foul Play after each crash. Run the container without `--rm` to keep its log.
 - Foul Play targets current Showdown. Against this Feb 2026 fork it needs the local patches in
   `../foul-play`: request/log reordering in `fp/websocket_client.py` and the Snow -> Snowscape
   rename in `fp/battle/protocol.py`. If it crashes on another mismatch, running it against an
@@ -57,4 +62,7 @@ at Foul Play's default search settings.
   30, 2026; 8 of the first 100, 19 of the second). Foul Play is still far stronger, roughly 320
   Elo at these settings. The 20M model (now `models/ppo_pokemon_6v6_v20.pt`, 52.3% vs the 10M
   one) hasn't played it; a gain that small wouldn't show in 200 games.
+- The search bots at Foul Play's budget (2 x 100 ms), 1,000 games each: step 6's best 47.4% ± 3.1%
+  (`agent_docs/step6.md`), step 7's with the learned leaf evaluation 50.9% ± 3.1%
+  (`agent_docs/step7.md`).
 - Public ladder: Jaxcalibur peaked at 2557 Elo (#1, Aug 2026); Foul Play peaked at 2341 Elo / 88% GXE.

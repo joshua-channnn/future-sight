@@ -4,15 +4,18 @@ A reinforcement learning bot for Gen 9 Random Battles on [Pokemon Showdown](http
 
 ## Performance
 
-The search bot (`search/policy.py`, step 6: poke-engine MCTS over opponent teams sampled from the
-fork's own random-battle generator, Foul Play's recipe in our own code; `agent_docs/step6.md`), at
-Foul Play's default budget (~200 ms per decision), counting actual wins:
+The search bot (`search/policy.py`; step 6: poke-engine MCTS over opponent teams sampled from the
+fork's own random-battle generator, Foul Play's recipe in our own code, with v21 as prior and
+hidden-set model, `agent_docs/step6.md`; step 7: a leaf evaluation learned from the search's own
+games in place of Foul Play's hand-written one, `agent_docs/step7.md`), at Foul Play's default
+budget (~200 ms per decision), counting actual wins:
 
 | Opponent | Games | Win Rate (95% CI) |
 |----------|-------|-------------------|
-| Foul Play (local, default search) | 500 | 47.4% ± 4.4% (with the Phase 2 network pieces, 1,000 games: 47.4% ± 3.1%) |
-| v20 at 20M steps (greedy), both seats | 2,000 | 80.0% ± 1.8% |
-| SimpleHeuristics | 1,000 | 91.5% ± 1.7% |
+| Foul Play (local, default search) | 1,000 | 50.9% ± 3.1% (step 6's bot: 47.4% ± 3.1%) |
+| Step 6's search bot (hand-written evaluation), both seats | 2,000 | 53.6% ± 2.2% |
+| v20 at 20M steps (greedy), both seats | 1,000 | 81.1% ± 2.4% (step 6's Phase 1 bot: 80.0% ± 1.8% over 2,000) |
+| SimpleHeuristics | 1,000 | 94.4% ± 1.4% (step 6's Phase 1 bot: 91.5% ± 1.7%) |
 
 `models/ppo_pokemon_6v6_v20.pt` (v20, 20M steps from scratch), counting actual wins (`battle.won`):
 
@@ -31,6 +34,10 @@ SimpleHeuristics, 73.9% vs v19 and 62.8% vs v18.3.
 v21 (v20 plus battle history, a transformer over the tokens and auxiliary prediction heads,
 October 2026) is level with v20 at equal steps: 50.9% ± 2.2% head-to-head at 20M steps (48.1% at
 10M), 85.5% ± 2.2% vs SimpleHeuristics, 72.5% vs v19, 70.3% vs v18.3 (`agent_docs/v21.md`).
+Distilled from the search bot's games (step 7, anchored to v21's own policy) it gains about 2
+points: 52.0% ± 2.2% vs v21 and 53.6% ± 2.2% vs v20; plain imitation of the search made it weaker
+(44.2% vs v20). The search bot keeps the original v21 inside: a distilled network there lost ~2.5
+points.
 
 The previous best, `models/ppo_pokemon_6v6_v18.3_best.zip`, wins 94.7% ± 1.4% vs RandomPlayer,
 67.9% ± 2.9% vs SimpleHeuristics and 60.4% ± 3.0% vs v17.3sp (1,000 games each). Earlier versions
