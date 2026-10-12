@@ -5,7 +5,8 @@ states:
 2. zero root weights give exactly the linear evaluation; random ones what numpy says;
 3. a trained model: the engine's v(state) with the model's root weights is the network's;
 4. antisymmetry: the mirrored state (sides exchanged) gives -c, W transposed and negated, u swapped;
-5. mcts_with runs with root weights, and the policy's search returns legal actions.
+5. mcts_with runs with root weights;
+6. pe.option_features_from_strings (one turn ahead): probabilities, switches, batching.
 
     python3 -m tools.check_matchup_eval [--model models/leaf_eval/mu4_pairs.pt]
 """
@@ -100,6 +101,34 @@ def main():
         r = pe.MctsResult._from_rust(pe.mcts_with(st, 1000, 20000, model.leaf_id, model.root_weights(st)))
         assert r.total_visits >= 20000 or len(r.side_one) <= 1, r.total_visits
     print("ok   mcts_with with root weights (5 searches of 20K iterations)")
+
+    # 6. one turn ahead (pe.option_features_from_strings): outcome probabilities sum to 1, a switch
+    # puts the chosen Pokemon in, the batch is the single calls
+    n_mu = 12 * M_LEAF + 36
+    sw_ok, mass_err, rows = 0, 0.0, []
+    for s in states[:200]:
+        st = pe.State.from_string(s)
+        sd = st.side_one
+        act = int(sd.active_index)
+        bench = [(k, p.id.lower()) for k, p in enumerate(sd.pokemon) if p.hp > 0 and k != act]
+        if not bench or sd.force_switch or st.side_two.force_switch:
+            continue
+        k, name = bench[0]
+        raw = pe.option_features_from_strings([s], [[name]], [["none"]], [[1.0]], True)
+        o = np.frombuffer(raw, np.float32)
+        mass_err = max(mass_err, abs(float(o[-3:].sum()) - 1))
+        phi_s1 = o[110:110 + 6 * M_LEAF].reshape(6, M_LEAF)
+        # the switched-in Pokemon is active, or fainted on the way in (hazards)
+        sw_ok += int(phi_s1[k, 10] + (1 - phi_s1[k, 0]) > 0.99 or o[-3] < 0.5)
+        rows.append((s, name))
+    report("one turn ahead: outcome probabilities sum to 1", mass_err, 1e-4)
+    report(f"one turn ahead: a switch puts that Pokemon in or it faints on entry ({len(rows)} states)",
+           float(len(rows) - sw_ok), 0)
+    batch = np.frombuffer(pe.option_features_from_strings([r[0] for r in rows[:20]], [[r[1]] for r in rows[:20]],
+                                                          [["none"]] * 20, [[1.0]] * 20, True), np.float32)
+    single = np.concatenate([np.frombuffer(pe.option_features_from_strings([r[0]], [[r[1]]], [["none"]], [[1.0]], True),
+                                           np.float32) for r in rows[:20]])
+    report("one turn ahead: batch == single calls", float(np.abs(batch - single).max()), 0)
     print("all checks passed" if ok else "SOME CHECKS FAILED")
 
 
