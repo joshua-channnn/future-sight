@@ -1,6 +1,13 @@
 diff -ruN a/poke-engine-py/src/lib.rs b/poke-engine-py/src/lib.rs
 --- a/poke-engine-py/src/lib.rs	2026-10-11 22:12:35
-+++ b/poke-engine-py/src/lib.rs	2026-10-11 22:48:03
++++ b/poke-engine-py/src/lib.rs	2026-10-12 02:34:49
+@@ -1,5 +1,5 @@
+ use pyo3::prelude::*;
+-use pyo3::types::PyType;
++use pyo3::types::{PyBytes, PyType};
+ use pyo3::{pyfunction, pymethods, pymodule, wrap_pyfunction, Bound, PyResult};
+ use std::collections::HashSet;
+ 
 @@ -11,7 +11,9 @@
  use poke_engine::engine::items::Items;
  use poke_engine::engine::state::{MoveChoice, PokemonVolatileStatus, Terrain, Weather};
@@ -12,7 +19,7 @@ diff -ruN a/poke-engine-py/src/lib.rs b/poke-engine-py/src/lib.rs
  use poke_engine::mcts_threaded::perform_mcts_shared_tree;
  use poke_engine::pokemon::PokemonName;
  use poke_engine::search::{expectiminimax_search, iterative_deepen_expectiminimax};
-@@ -986,6 +988,250 @@
+@@ -986,6 +988,301 @@
      ))
  }
  
@@ -243,6 +250,57 @@ diff -ruN a/poke-engine-py/src/lib.rs b/poke-engine-py/src/lib.rs
 +    (ints, floats)
 +}
 +
++/// One turn ahead (engine::learned::option_features) for each serialized state: s1_options[i] are
++/// side one's options (MoveChoice strings: a move id, "<move>-tera", a Pokemon id to switch to,
++/// "none"), s2_options[i] / s2_weights[i] side two's with their probabilities. Returns float32
++/// bytes: per state and side-one option, N_FEATURES (+ 12 x M_LEAF + 36 with matchup) + 3 values.
++#[pyfunction]
++#[pyo3(signature = (states, s1_options, s2_options, s2_weights, matchup=false))]
++fn option_features_from_strings<'py>(
++    py: Python<'py>,
++    states: Vec<String>,
++    s1_options: Vec<Vec<String>>,
++    s2_options: Vec<Vec<String>>,
++    s2_weights: Vec<Vec<f32>>,
++    matchup: bool,
++) -> PyResult<Bound<'py, PyBytes>> {
++    let n = learned::N_FEATURES + if matchup { 12 * learned::M_LEAF + 36 } else { 0 } + 3;
++    if s1_options.len() != states.len() || s2_options.len() != states.len() || s2_weights.len() != states.len() {
++        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("one list of options per state"));
++    }
++    let mut out: Vec<f32> = Vec::new();
++    for i in 0..states.len() {
++        let mut state = State::deserialize(&states[i]);
++        let mut s1 = Vec::with_capacity(s1_options[i].len());
++        for m in s1_options[i].iter() {
++            match MoveChoice::from_string(m, &state.side_one) {
++                Some(c) => s1.push(c),
++                None => {
++                    return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
++                        "state {}: invalid side-one option {}", i, m
++                    )))
++                }
++            }
++        }
++        let mut s2 = Vec::with_capacity(s2_options[i].len());
++        for (m, w) in s2_options[i].iter().zip(s2_weights[i].iter()) {
++            match MoveChoice::from_string(m, &state.side_two) {
++                Some(c) => s2.push((c, *w)),
++                None => {
++                    return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
++                        "state {}: invalid side-two option {}", i, m
++                    )))
++                }
++            }
++        }
++        let start = out.len();
++        out.resize(start + s1.len() * n, 0.0);
++        learned::option_features(&mut state, &s1, &s2, matchup, &mut out[start..]);
++    }
++    let bytes = unsafe { std::slice::from_raw_parts(out.as_ptr() as *const u8, out.len() * 4) };
++    Ok(PyBytes::new(py, bytes))
++}
++
 +/// Sizes for the matchup weights: N_POKE_INTS, N_POKE_FLOATS, N_FIELD, M_LEAF, N_FEATURES,
 +/// N_ROOT_WEIGHTS; and the leaf feature names.
 +#[pyfunction]
@@ -263,7 +321,7 @@ diff -ruN a/poke-engine-py/src/lib.rs b/poke-engine-py/src/lib.rs
  #[derive(Clone)]
  #[pyclass(
      name = "StateInstructions",
-@@ -1153,6 +1399,19 @@
+@@ -1153,6 +1450,20 @@
      m.add_function(wrap_pyfunction!(generate_instructions, m)?)?;
      m.add_function(wrap_pyfunction!(id, m)?)?;
      m.add_function(wrap_pyfunction!(emm_matrix, m)?)?;
@@ -280,6 +338,7 @@ diff -ruN a/poke-engine-py/src/lib.rs b/poke-engine-py/src/lib.rs
 +    m.add_function(wrap_pyfunction!(pair_features, m)?)?;
 +    m.add_function(wrap_pyfunction!(pair_feature_names, m)?)?;
 +    m.add_function(wrap_pyfunction!(move_table, m)?)?;
++    m.add_function(wrap_pyfunction!(option_features_from_strings, m)?)?;
      m.add_function(wrap_pyfunction!(mcts, m)?)?;
      m.add_class::<PyState>()?;
      m.add_class::<PySide>()?;
@@ -297,8 +356,8 @@ diff -ruN a/src/genx/generate_instructions.rs b/src/genx/generate_instructions.r
  
 diff -ruN a/src/genx/learned.rs b/src/genx/learned.rs
 --- a/src/genx/learned.rs	1969-12-31 19:00:00
-+++ b/src/genx/learned.rs	2026-10-11 22:48:03
-@@ -0,0 +1,761 @@
++++ b/src/genx/learned.rs	2026-10-12 02:34:49
+@@ -0,0 +1,833 @@
 +//! A learned leaf evaluation for MCTS (pokemon-rl, step 7): features of a state and a small
 +//! antisymmetric model on them, v(state) = g(x) - g(swap(x)), the logit of side one winning.
 +//! x = [side features of side one, of side two, cross features]; swap(x) exchanges the two
@@ -314,7 +373,8 @@ diff -ruN a/src/genx/learned.rs b/src/genx/learned.rs
 +use super::abilities::Abilities;
 +use super::damage_calc::type_effectiveness_modifier;
 +use super::evaluate::evaluate;
-+use super::generate_instructions::get_effective_speed;
++use super::generate_instructions::{generate_instructions_from_move_pair, get_effective_speed};
++use super::state::MoveChoice;
 +use super::items::Items;
 +use super::state::PokemonVolatileStatus;
 +use crate::choices::{Choices, MoveCategory};
@@ -1041,6 +1101,77 @@ diff -ruN a/src/genx/learned.rs b/src/genx/learned.rs
 +            o[6] = best_effectiveness(q, p);
 +            o[7] = b(raw_damage(p, q, true) >= hp_q);
 +            o[8] = b(raw_damage(q, p, true) >= hp_p);
++        }
++    }
++}
++
++// ---- one turn ahead: the expected leaf features after each option (training on search values) ----
++
++/// The expected features of the state after one turn for each side-one option: lin's features
++/// (N_FEATURES) and, with `matchup`, the per-Pokemon leaf features (12 x M_LEAF) and the active
++/// pair's one-hot (36), averaged over the side-two options (weights) and the turn's outcomes
++/// (generate_instructions_from_move_pair, branching on damage as MCTS does at the root) that don't
++/// end the battle; then the probabilities of not ending it, of side one winning, of side one losing.
++pub fn option_features(
++    state: &mut State,
++    s1: &[MoveChoice],
++    s2: &[(MoveChoice, f32)],
++    matchup: bool,
++    out: &mut [f32],
++) {
++    let nf = N_FEATURES + if matchup { 12 * M_LEAF + 36 } else { 0 };
++    let n = nf + 3;
++    let wsum: f32 = s2.iter().map(|x| x.1).sum::<f32>().max(1e-9);
++    let mut x = [0f32; N_FEATURES];
++    let mut phi = [0f32; M_LEAF];
++    for (i, m1) in s1.iter().enumerate() {
++        let o = &mut out[i * n..(i + 1) * n];
++        for v in o.iter_mut() {
++            *v = 0.0;
++        }
++        for (m2, w) in s2.iter() {
++            let instructions = generate_instructions_from_move_pair(state, m1, m2, true);
++            let total: f32 = instructions.iter().map(|si| si.percentage).sum::<f32>().max(1e-9);
++            for si in instructions.iter() {
++                let p = w / wsum * si.percentage / total;
++                state.apply_instructions(&si.instruction_list);
++                let over = state.battle_is_over();
++                if over == 0.0 {
++                    features(state, &mut x);
++                    for k in 0..N_FEATURES {
++                        o[k] += p * x[k];
++                    }
++                    if matchup {
++                        for slot in 0..6 {
++                            leaf_features(&state.side_one, slot, &mut phi);
++                            for k in 0..M_LEAF {
++                                o[N_FEATURES + slot * M_LEAF + k] += p * phi[k];
++                            }
++                            leaf_features(&state.side_two, slot, &mut phi);
++                            for k in 0..M_LEAF {
++                                o[N_FEATURES + (6 + slot) * M_LEAF + k] += p * phi[k];
++                            }
++                        }
++                        let a1 = state.side_one.active_index as usize;
++                        let a2 = state.side_two.active_index as usize;
++                        if state.side_one.pokemon.pkmn[a1].hp > 0 && state.side_two.pokemon.pkmn[a2].hp > 0 {
++                            o[N_FEATURES + 12 * M_LEAF + a1 * 6 + a2] += p;
++                        }
++                    }
++                    o[nf] += p;
++                } else if over > 0.0 {
++                    o[nf + 1] += p;
++                } else {
++                    o[nf + 2] += p;
++                }
++                state.reverse_instructions(&si.instruction_list);
++            }
++        }
++        let alive = o[nf];
++        if alive > 0.0 {
++            for k in 0..nf {
++                o[k] /= alive;
++            }
 +        }
 +    }
 +}
