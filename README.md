@@ -92,7 +92,10 @@ python -m players.play_bot
 
 Open `http://localhost:8000` in your browser and challenge `MyPPOBot` to a Gen 9 Random Battle.
 It's the search bot (`search/`, ~0.6 s per decision); `--model models/<an SB3 zip or a .pt>` plays an
-older model instead.
+older model instead. With `--explain`, the bot posts its reasoning in the Lobby after each turn (open
+the Lobby next to the battle; Showdown only lets registered users talk in battles): what it chose,
+each option's share of its search with the win chance it gave it, what it expected you to pick (`?`
+marks moves it guessed you have) and the item it guessed for your Pokémon.
 
 ### Run on the Pokemon Showdown ladder
 

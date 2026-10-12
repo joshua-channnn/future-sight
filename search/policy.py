@@ -11,12 +11,18 @@ order(battle) -> BattleOrder), so eval/v20_eval.play_games and the other eval sc
 SearchPlayer wraps it as a poke-env Player for live play (e.g. against Foul Play).
 """
 import asyncio
+import functools
+import math
+import os
 import random
+import re
 import time
 from collections import Counter, defaultdict
 
 import numpy as np
 import poke_engine as pe
+from poke_env.battle.move import Move
+from poke_env.data import GenData
 from poke_env.player import DefaultBattleOrder, Player
 
 from envs.rl_player_v20 import action_mask, action_to_order, hold_requests_until_log
@@ -73,6 +79,7 @@ class SearchPolicy:
         self.iterations = iterations
         self.iters_per_ms = iters_per_ms
         self.lock_choice = lock_choice
+        self.leaf_scale = leaf_scale
         self.leaf_id = 0   # 0: the engine's hand-written evaluation
         self.matchup = None
         if leaf_eval or matchup:
@@ -91,6 +98,7 @@ class SearchPolicy:
         self.latency = []
         self.sample_iters = []   # MCTS iterations of each sample
         self.last = None   # details of the last decision: {action: share}, iterations, samples
+        self.explain = False   # last also gets what describe_decision needs (SearchPlayer(explain=True))
 
     # ---- budget ---------------------------------------------------------------------------------
     def budget(self, battle):
@@ -112,6 +120,8 @@ class SearchPolicy:
             return self._search_emm(battle, mask, self.emm_samples, obs, weight_fn)
         shares = defaultdict(float)
         q_score, q_visits = defaultdict(float), defaultdict(int)   # per action, over the samples
+        # explain: the opponent's options' shares, its active's sampled items, the root's v
+        opp, items, v_root = defaultdict(float), Counter(), 0.0
         iters = 0
         value = 0.0
         for _ in range(n):
@@ -127,6 +137,13 @@ class SearchPolicy:
                 r = pe.monte_carlo_tree_search(state, iterations=its, threads=self.threads)
             else:
                 r = pe.monte_carlo_tree_search(state, ms, threads=self.threads)
+            if self.explain:
+                visits2 = max(sum(x.visits for x in r.side_two), 1)
+                for x in r.side_two:
+                    opp[x.move_choice] += x.visits / visits2 / n
+                items[state.side_two.pokemon[int(state.side_two.active_index)].item.lower()] += 1
+                if self.leaf_id:
+                    v_root += pe.evaluator_values(self.leaf_id, [state.to_string()], rw)[0] / n
             total = max(r.total_visits, 1)
             iters += r.total_visits
             self.sample_iters.append(r.total_visits)
@@ -151,6 +168,8 @@ class SearchPolicy:
         # q: each action's mean MCTS score over its visits in all samples (0..1, for side one)
         self.last = {"shares": dict(shares), "iterations": iters, "samples": n, "value": value,
                      "q": {a: q_score[a] / q_visits[a] for a in q_visits if q_visits[a]}}
+        if self.explain:
+            self.last.update(opp=dict(opp), items=items, v_root=v_root if self.leaf_id else None)
         if self.prior_weight:
             pi = self.net.policy(battle)
             before = max(shares, key=shares.get) if shares else None
@@ -257,13 +276,92 @@ class SearchPolicy:
                 ", ".join(f"{k}: {v}" for k, v in sorted(self.stats.items()) if k != "searched"))
 
 
+@functools.lru_cache(maxsize=1)
+def _item_names():
+    """Item id -> name from the Showdown fork's data, for describe_decision (ids without it)."""
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "pokemon-showdown", "data", "items.ts")
+    try:
+        with open(path) as f:
+            return dict(re.findall(r'^\t(\w+): \{\n\t\tname: "([^"]+)"', f.read(), re.M))
+    except OSError:
+        return {}
+
+
+def describe_decision(battle, last, order, scale):
+    """One chat line about a search's decision (SearchPolicy.last with explain on): the choice and,
+    with a learned evaluation, the win chance the search's root value implies (mode 2's leaf score
+    inverted: sigmoid(v(root) + logit(q) / scale)); our options' shares of the search with the same
+    for each; the opponent's options by their share of the search (unrevealed moves, which come from
+    the sampled sets, marked "?"; switches to unrevealed Pokemon added up); the sampled item of its
+    active while unrevealed."""
+    dex = GenData.from_gen(battle.gen)
+
+    def move(m):
+        return dex.moves.get(m, {}).get("name", m)
+
+    def mon(p):
+        return dex.pokedex.get(p, {}).get("name", p)
+
+    def ours(o):   # a BattleOrder
+        x = getattr(o, "order", None)
+        if isinstance(x, Move):
+            return move(x.id) + (" (Tera)" if o.terastallize else "")
+        return "switch to " + mon(x.species) if x is not None else "the default choice"
+
+    act = battle.opponent_active_pokemon
+    seen = {p.species for p in battle.opponent_team.values()}
+    seen_moves = set(act.moves) if act is not None else set()
+    opp, unseen = defaultdict(float), 0.0
+    for o, s in last["opp"].items():
+        if o in ("none", "No Move"):
+            continue
+        if o.startswith("switch "):
+            p = o[7:]
+            if any(p.startswith(x) or x.startswith(p) for x in seen):   # formes: ids differ in the suffix
+                opp["switch to " + mon(p)] += s
+            else:
+                unseen += s
+        else:
+            m = o[:-5] if o.endswith("-tera") else o
+            opp[move(m) + ("" if m in seen_moves else "?") + (" (Tera)" if o != m else "")] += s
+    if unseen:
+        opp["a Pokemon I haven't seen"] = unseen
+
+    v = last["v_root"]
+
+    def win(q):
+        q = min(max(q, 1e-3), 1 - 1e-3)
+        return 100 / (1 + math.exp(-(v + math.log(q / (1 - q)) / scale)))
+
+    top = [(a, s) for a, s in sorted(last["shares"].items(), key=lambda kv: -kv[1])[:4] if s >= 0.02]
+    mine = ", ".join(f"{ours(action_to_order(a, battle))} {100 * s:.0f}%" +
+                     (f" [~{win(last['q'][a]):.0f}%]" if v is not None and a in last["q"] else "") for a, s in top)
+    expected = [(o, s) for o, s in sorted(opp.items(), key=lambda kv: -kv[1]) if s >= 0.02][:4]
+    parts = [f"Turn {battle.turn}{' (switch-in)' if battle.force_switch else ''}: I chose {ours(order)}."]
+    if v is not None:
+        parts.append(f"My win chance ~{win(last['value']):.0f}%.")
+    parts.append(f"My search: {mine}.")
+    if expected:
+        parts.append("I expected you to pick: " + ", ".join(f"{o} {100 * s:.0f}%" for o, s in expected) +
+                     (" (? = a move I guessed you have)" if any("?" in o for o, _ in expected) else "") + ".")
+    if act is not None and act.item == GenData.UNKNOWN_ITEM and last["items"]:
+        guess = " or ".join(_item_names().get(i, i) for i, _ in last["items"].most_common(2))
+        parts.append(f"Guessed your {mon(act.species)}'s item: {guess}.")
+    return " ".join(parts)
+
+
 class SearchPlayer(Player):
     """poke-env Player driven by a SearchPolicy, for live play (e.g. against Foul Play).
-    hold_requests: against this repo's Showdown fork (requests before the turn's log)."""
+    hold_requests: against this repo's Showdown fork (requests before the turn's log). explain: post
+    each decision (describe_decision) once its turn has been played, in explain_room (joined on
+    first use) or else the battle's room, where Showdown only lets registered users talk."""
 
-    def __init__(self, policy=None, hold_requests=False, **kwargs):
+    def __init__(self, policy=None, hold_requests=False, explain=False, explain_room=None, **kwargs):
         super().__init__(**kwargs)
         self.policy = policy or SearchPolicy()
+        self.policy.explain = explain
+        self.explain_room, self.joined = explain_room, False
+        self.notes = {}   # battle tag -> the last decision's explanation, not posted yet
         if hold_requests:
             hold_requests_until_log(self)
 
@@ -277,4 +375,20 @@ class SearchPlayer(Player):
             return self.policy.order(battle)
 
     async def _async_choose_move(self, battle):
-        return self.policy.order(battle)
+        if not self.policy.explain:
+            return self.policy.order(battle)
+        note = self.notes.pop(battle.battle_tag, None)
+        if note:   # the previous decision: its turn has been played since
+            if self.explain_room and not self.joined:
+                await self.ps_client.send_message(f"/join {self.explain_room}")
+                self.joined = True
+            await self.ps_client.send_message(note, self.explain_room or battle.battle_tag)
+        self.policy.last = None
+        order = self.policy.order(battle)
+        if self.policy.last and "opp" in self.policy.last:
+            try:
+                self.notes[battle.battle_tag] = describe_decision(battle, self.policy.last, order,
+                                                                  self.policy.leaf_scale)
+            except Exception as e:  # noqa: BLE001 - an explanation must never cost the move
+                self.policy.stats[f"explain failed: {type(e).__name__}: {str(e)[:80]}"] += 1
+        return order
