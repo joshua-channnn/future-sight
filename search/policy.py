@@ -29,7 +29,7 @@ class SearchPolicy:
     def __init__(self, samples=2, ms=100, early_samples=4, early_ms=50, threads=1, near_best=0.75,
                  deterministic=False, seed=None, iterations=0, iters_per_ms=0.0, net=None, prior_weight=0.0,
                  set_gamma=0.0, infer_items=False, algo="mcts", emm_depth=2, emm_samples=8, worst_weight=1.0,
-                 lock_choice=True, leaf_eval=None, leaf_mode=2, leaf_scale=1.0):
+                 lock_choice=True, leaf_eval=None, leaf_mode=2, leaf_scale=1.0, matchup=None, matchup_weight=1.0):
         """samples x ms: the budget per decision (early_samples x early_ms early in the game, as
         Foul Play). near_best: pick among options with at least this share of the best one's
         visits (Foul Play: 0.75); deterministic: always the best. iterations > 0 replaces the time
@@ -53,7 +53,11 @@ class SearchPolicy:
         Step 7: leaf_eval, the weights of a learned leaf evaluation (search/leaf_eval.py, from
         training/train_leaf_eval.py) in place of the engine's hand-written one; leaf_mode 1 scores a
         leaf sigmoid(v), 2 sigmoid(leaf_scale * (v - v(root))). Needs the engine patch
-        learned_eval.patch and threads 1."""
+        learned_eval.patch and threads 1.
+
+        Step 8: matchup, a .pt of training/train_matchup_eval.py (search/matchup_eval.py): its linear
+        part replaces leaf_eval, and a network sets each search's per-Pokemon weights from its root;
+        matchup_weight scales that term."""
         if (prior_weight or set_gamma or (algo == "emm" and worst_weight < 1)) and net is None:
             raise ValueError("prior_weight, set_gamma and the opponent model need net (search.net.NetModel)")
         if algo not in ("mcts", "emm"):
@@ -70,9 +74,15 @@ class SearchPolicy:
         self.iters_per_ms = iters_per_ms
         self.lock_choice = lock_choice
         self.leaf_id = 0   # 0: the engine's hand-written evaluation
-        if leaf_eval:
+        self.matchup = None
+        if leaf_eval or matchup:
             if threads != 1:
-                raise ValueError("leaf_eval needs threads 1")
+                raise ValueError("leaf_eval and matchup need threads 1")
+        if matchup:
+            from search.matchup_eval import MatchupModel
+            self.matchup = MatchupModel(matchup, leaf_mode, leaf_scale, matchup_weight)
+            self.leaf_id = self.matchup.leaf_id
+        elif leaf_eval:
             self.leaf_id = evaluator_id(leaf_eval, leaf_mode, leaf_scale)
         self.rng = random.Random(seed)
         self.debug_path = None   # a file: log every search whose engine options weren't all legal
@@ -111,7 +121,8 @@ class SearchPolicy:
             if self.iterations or self.iters_per_ms:
                 its = self.iterations or max(1, int(self.iters_per_ms * ms))
             if self.leaf_id:
-                r = leaf_mcts(state, ms, its, self.leaf_id)
+                rw = self.matchup.root_weights(state) if self.matchup else None
+                r = leaf_mcts(state, ms, its, self.leaf_id, rw)
             elif its:
                 r = pe.monte_carlo_tree_search(state, iterations=its, threads=self.threads)
             else:

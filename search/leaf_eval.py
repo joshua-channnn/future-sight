@@ -14,6 +14,7 @@ import numpy as np
 import poke_engine as pe
 
 BEST = "models/leaf_eval/lin1_86.npz"   # the evaluator of agent_docs/step7.md's results
+BEST_MATCHUP = None   # a search/matchup_eval.py model that beats BEST (agent_docs/step8.md), if any
 _IDS = {}
 
 
@@ -21,13 +22,18 @@ def has_engine_support():
     return hasattr(pe, "mcts_with")
 
 
-def best_settings(path=BEST):
-    """SearchPolicy arguments for the best learned evaluation, or {} (the engine's hand-written
-    evaluation, with a warning) when this engine build lacks it or `path` is missing."""
+def best_settings(path=BEST, matchup=BEST_MATCHUP):
+    """SearchPolicy arguments for the best learned evaluation: the matchup model when there is one
+    and this engine build has its bindings, else the linear `path`, else {} (the engine's
+    hand-written evaluation), with a warning for each fallback."""
     if not has_engine_support():
         print("poke-engine has no learned evaluation (bash search/engine_patch/build.sh): "
               "the search uses the hand-written one")
         return {}
+    if matchup:
+        if hasattr(pe, "matchup_inputs") and os.path.exists(matchup):
+            return {"matchup": matchup, "leaf_mode": 2, "leaf_scale": 1.4}
+        print(f"{matchup} not found or this poke-engine build has no matchup weights: the search uses {path}")
     if not os.path.exists(path):
         print(f"{path} not found: the search uses the hand-written evaluation")
         return {}
@@ -56,6 +62,7 @@ def evaluator_id(path, mode=2, scale=1.0):
     return _IDS[key]
 
 
-def mcts(state, ms, iterations, evaluator):
-    """pe.monte_carlo_tree_search on one thread with evaluator (0: the hand-written evaluation)."""
-    return pe.MctsResult._from_rust(pe.mcts_with(state, int(ms), int(iterations), int(evaluator)))
+def mcts(state, ms, iterations, evaluator, root_weights=None):
+    """pe.monte_carlo_tree_search on one thread with evaluator (0: the hand-written evaluation) and
+    optionally a search's matchup weights (search/matchup_eval.py)."""
+    return pe.MctsResult._from_rust(pe.mcts_with(state, int(ms), int(iterations), int(evaluator), root_weights))
