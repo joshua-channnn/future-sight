@@ -58,6 +58,15 @@ Step 7 (learning from the search, details in `agent_docs/step7.md`):
   the hand-written evaluation without the engine patch), `training/train_leaf_eval.py`.
 - `tools/foulplay_loop.sh`: Foul Play evals of the search bot that restart Foul Play when it crashes.
 
+Step 8 (matchup weights for the leaf evaluation; built and tested, no gain in play, details in
+`agent_docs/step8.md`):
+- `search/matchup_eval.py`: a network that sets per-Pokemon leaf weights once per search
+  (`MatchupNet`, `MatchupLinear`, `MatchupModel`); the engine side is in `learned_eval.patch`
+  (`mcts_with(..., root_weights)`, `matchup_inputs`, `pair_features`, `move_table`).
+  `SearchPolicy(matchup=<.pt>, matchup_weight=a)`; `search/leaf_eval.py` `BEST_MATCHUP` (None).
+- `training/train_matchup_eval.py` (pairs of states; ids let it memorize games: use
+  `--ids none --move-props --pairs --no-value`); checks: `tools/check_matchup_eval.py`.
+
 v17-v19 (SB3):
 - `envs/rl_player_6v6_v18.py`: the environment. Observation (677 floats: 12 Pokémon blocks,
   active-move details, global features), reward (`reward_mode`: `sparse` or `shaped`), action
@@ -129,3 +138,5 @@ v17-v19 (SB3):
   model): `agent_docs/step6.md`; the brief it was built from: `agent_docs/step6_brief.md`
 - step 7 (search self-play data, distilling the search into the network, the learned leaf
   evaluation): `agent_docs/step7.md`; the brief it was built from: `agent_docs/step7_brief.md`
+- step 8 (matchup weights for the leaf evaluation; why better prediction didn't make the search
+  stronger): `agent_docs/step8.md`

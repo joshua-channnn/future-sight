@@ -209,7 +209,8 @@ features (section 3). More rounds of the loop need a model that sees more of the
 
 ## 5. What next
 The search bot with `lin1_86` is the best bot, level with Foul Play at its budget. In order:
-1. **A matchup-aware leaf evaluation** (recommended; days of work). What a linear model of per-side
+1. **A matchup-aware leaf evaluation** (done in `step8.md`: it predicts results better but doesn't
+   make the search stronger; lin1_86 stays). What a linear model of per-side
    totals can't express is the matchup: how much each Pokemon's HP is worth depends on what it faces.
    Keep the leaves linear and let a small network set their weights once per search: it looks at the
    root (the sampled opponent team included) and outputs per-Pokemon weights for HP, alive and
