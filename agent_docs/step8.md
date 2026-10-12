@@ -45,7 +45,9 @@ and the search with it is still level (50.5% ± 3.1%).**
   turn ahead against side two's weighted options, the successors' expected features);
   `training/train_q_eval.py` (the successor cache `datasets/q_cache/`, the linear fits) and
   `training/train_q_matchup.py` (the matchup network on the same objective, cache
-  `datasets/q_cache_mu/`, 25% of the training decisions). Both caches are gitignored, 4.7 GB.
+  `datasets/q_cache_mu/`, 25% of the training decisions). Both caches (gitignored, 4.7 GB) were
+  deleted after the step: `train_q_eval.py` rebuilds its own on the first run, the network's is
+  built as the `train_q_matchup.py` docstring shows (about 5 minutes each).
 - Models (gitignored unless deployed): `models/leaf_eval/mu*.pt` with their `_lin.npz` (the linear
   part) and `_val.npz` (validation losses per pair, for paired comparisons).
 - Logs: `logs/mu*.log`; the A/Bs `logs/ab_mu5_*.log` (scale 1.4), `ab_mu5s10_*` (1.0), `ab_mu9s12_*`,

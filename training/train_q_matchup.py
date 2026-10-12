@@ -9,6 +9,15 @@ the matchup term is what is learned. The targets differ between the options of o
 memorizing a game's result doesn't help (training/train_matchup_eval.py's problem).
 
     python3 -m training.train_q_matchup --out models/leaf_eval/qmu1.pt
+
+It only reads the cache (shards missing from it are skipped), so build it first (about 5 minutes):
+
+    import os
+    from training.train_q_eval import split_shards, shard_cache
+    os.makedirs("datasets/q_cache_mu", exist_ok=True)
+    tr, va = split_shards(["datasets/search_selfplay", "datasets/search_selfplay_r1"], 10)
+    for f in va + tr:
+        shard_cache(f, "datasets/q_cache_mu", matchup=True, keep_frac=1.0 if f in va else 0.25)
 """
 import argparse
 import glob
