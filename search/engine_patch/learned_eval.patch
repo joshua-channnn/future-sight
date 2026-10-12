@@ -1,8 +1,7 @@
-diff --git a/poke-engine-py/src/lib.rs b/poke-engine-py/src/lib.rs
-index a59243d..ce0657b 100644
---- a/poke-engine-py/src/lib.rs
-+++ b/poke-engine-py/src/lib.rs
-@@ -11,7 +11,9 @@ use poke_engine::engine::generate_instructions::{
+diff -ruN a/poke-engine-py/src/lib.rs b/poke-engine-py/src/lib.rs
+--- a/poke-engine-py/src/lib.rs	2026-10-11 22:12:35
++++ b/poke-engine-py/src/lib.rs	2026-10-11 22:48:03
+@@ -11,7 +11,9 @@
  use poke_engine::engine::items::Items;
  use poke_engine::engine::state::{MoveChoice, PokemonVolatileStatus, Terrain, Weather};
  use poke_engine::instruction::{Instruction, StateInstructions};
@@ -13,7 +12,7 @@ index a59243d..ce0657b 100644
  use poke_engine::mcts_threaded::perform_mcts_shared_tree;
  use poke_engine::pokemon::PokemonName;
  use poke_engine::search::{expectiminimax_search, iterative_deepen_expectiminimax};
-@@ -986,6 +988,105 @@ fn emm_matrix(py_state: PyState, depth: i8, ab_prune: bool) -> PyResult<PyIterat
+@@ -986,6 +988,250 @@
      ))
  }
  
@@ -73,11 +72,32 @@ index a59243d..ce0657b 100644
 +    }
 +}
 +
++fn with_root_weights(
++    e: Option<Arc<learned::Evaluator>>,
++    root_weights: Option<Vec<f32>>,
++) -> PyResult<Option<Arc<learned::Evaluator>>> {
++    match (e, root_weights) {
++        (e, None) => Ok(e),
++        (None, Some(_)) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
++            "root_weights need a learned evaluator",
++        )),
++        (Some(e), Some(w)) => match e.with_root_weights(w) {
++            Ok(e) => Ok(Some(Arc::new(e))),
++            Err(msg) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(msg)),
++        },
++    }
++}
++
 +/// An evaluator's value of each serialized state: the logit of side one winning (evaluator 0:
-+/// the hand-written evaluate()).
++/// the hand-written evaluate()); root_weights: matchup weights (engine::learned) for all of them.
 +#[pyfunction]
-+fn evaluator_values(evaluator: usize, states: Vec<String>) -> PyResult<Vec<f32>> {
-+    let e = learned_evaluator(evaluator)?;
++#[pyo3(signature = (evaluator, states, root_weights=None))]
++fn evaluator_values(
++    evaluator: usize,
++    states: Vec<String>,
++    root_weights: Option<Vec<f32>>,
++) -> PyResult<Vec<f32>> {
++    let e = with_root_weights(learned_evaluator(evaluator)?, root_weights)?;
 +    Ok(states
 +        .iter()
 +        .map(|s| {
@@ -90,15 +110,18 @@ index a59243d..ce0657b 100644
 +        .collect())
 +}
 +
-+/// mcts on one thread with a learned leaf evaluation (evaluator 0: the hand-written one).
++/// mcts on one thread with a learned leaf evaluation (evaluator 0: the hand-written one) and,
++/// optionally, the matchup weights of this search (root_weights, engine::learned).
 +#[pyfunction]
++#[pyo3(signature = (py_state, duration_ms, iterations, evaluator, root_weights=None))]
 +fn mcts_with(
 +    py_state: PyState,
 +    duration_ms: u64,
 +    mut iterations: u32,
 +    evaluator: usize,
++    root_weights: Option<Vec<f32>>,
 +) -> PyResult<PyMctsResult> {
-+    let e = learned_evaluator(evaluator)?;
++    let e = with_root_weights(learned_evaluator(evaluator)?, root_weights)?;
 +    let mut state: State = py_state.into();
 +    let duration = Duration::from_millis(duration_ms);
 +    let (s1_options, s2_options) = state.root_get_all_options();
@@ -116,10 +139,131 @@ index a59243d..ce0657b 100644
 +    Ok(PyMctsResult::from_mcts_result(mcts_result, &state))
 +}
 +
++/// The inputs of the matchup-weight network (engine::learned::matchup_inputs) for each serialized
++/// state, flattened: (ints, floats), matchup_layout()'s sizes per state.
++#[pyfunction]
++fn matchup_inputs_from_strings(states: Vec<String>) -> PyResult<(Vec<i32>, Vec<f32>)> {
++    let (ni, nf) = (learned::N_MATCHUP_INTS, learned::N_MATCHUP_FLOATS);
++    let mut ints = vec![0i32; states.len() * ni];
++    let mut floats = vec![0f32; states.len() * nf];
++    for (i, s) in states.iter().enumerate() {
++        let state = State::deserialize(s);
++        learned::matchup_inputs(
++            &state,
++            &mut ints[i * ni..(i + 1) * ni],
++            &mut floats[i * nf..(i + 1) * nf],
++        );
++    }
++    Ok((ints, floats))
++}
++
++/// matchup_inputs_from_strings for one State.
++#[pyfunction]
++fn matchup_inputs(py_state: PyState) -> PyResult<(Vec<i32>, Vec<f32>)> {
++    let state: State = py_state.into();
++    let mut ints = vec![0i32; learned::N_MATCHUP_INTS];
++    let mut floats = vec![0f32; learned::N_MATCHUP_FLOATS];
++    learned::matchup_inputs(&state, &mut ints, &mut floats);
++    Ok((ints, floats))
++}
++
++/// The per-Pokemon leaf features (engine::learned::leaf_features) of each serialized state:
++/// side one's 6 x M_LEAF, side two's, then the 36 one-hot of the active pair (both alive).
++#[pyfunction]
++fn leaf_features_from_strings(states: Vec<String>) -> PyResult<Vec<f32>> {
++    let m = learned::M_LEAF;
++    let n = 12 * m + 36;
++    let mut out = vec![0f32; states.len() * n];
++    for (i, s) in states.iter().enumerate() {
++        let state = State::deserialize(s);
++        let o = &mut out[i * n..(i + 1) * n];
++        for slot in 0..6 {
++            learned::leaf_features(&state.side_one, slot, &mut o[slot * m..(slot + 1) * m]);
++            learned::leaf_features(&state.side_two, slot, &mut o[(6 + slot) * m..(7 + slot) * m]);
++        }
++        let a1 = state.side_one.active_index as usize;
++        let a2 = state.side_two.active_index as usize;
++        if state.side_one.pokemon.pkmn[a1].hp > 0 && state.side_two.pokemon.pkmn[a2].hp > 0 {
++            o[12 * m + a1 * 6 + a2] = 1.0;
++        }
++    }
++    Ok(out)
++}
++
++/// The pairwise matchup features (engine::learned::pair_features, 36 x N_PAIR) of each serialized
++/// state, flattened.
++#[pyfunction]
++fn pair_features_from_strings(states: Vec<String>) -> PyResult<Vec<f32>> {
++    let n = 36 * learned::N_PAIR;
++    let mut out = vec![0f32; states.len() * n];
++    for (i, s) in states.iter().enumerate() {
++        let state = State::deserialize(s);
++        learned::pair_features(&state, &mut out[i * n..(i + 1) * n]);
++    }
++    Ok(out)
++}
++
++/// pair_features_from_strings for one State, and the feature names.
++#[pyfunction]
++fn pair_features(py_state: PyState) -> PyResult<Vec<f32>> {
++    let state: State = py_state.into();
++    let mut out = vec![0f32; 36 * learned::N_PAIR];
++    learned::pair_features(&state, &mut out);
++    Ok(out)
++}
++
++#[pyfunction]
++fn pair_feature_names() -> Vec<String> {
++    learned::PAIR_NAMES.iter().map(|s| s.to_string()).collect()
++}
++
++/// Static move data by the Choices enum's value (0 = NONE): ints (type, category: 0 physical,
++/// 1 special, 2 status, 3 switch; priority) and floats (base power / 100, accuracy / 100).
++#[pyfunction]
++fn move_table() -> (Vec<i32>, Vec<f32>) {
++    let (mut ints, mut floats) = (Vec::new(), Vec::new());
++    let mut i: u16 = 0;
++    loop {
++        let c = Choices::from(i);
++        if i > 0 && c == Choices::NONE {
++            break;
++        }
++        match MOVES.get(&c) {
++            Some(m) => {
++                ints.extend_from_slice(&[m.move_type as i32, m.category.clone() as i32, m.priority as i32]);
++                floats.extend_from_slice(&[m.base_power / 100.0, m.accuracy / 100.0]);
++            }
++            None => {
++                ints.extend_from_slice(&[0, 2, 0]);
++                floats.extend_from_slice(&[0.0, 1.0]);
++            }
++        }
++        i += 1;
++    }
++    (ints, floats)
++}
++
++/// Sizes for the matchup weights: N_POKE_INTS, N_POKE_FLOATS, N_FIELD, M_LEAF, N_FEATURES,
++/// N_ROOT_WEIGHTS; and the leaf feature names.
++#[pyfunction]
++fn matchup_layout() -> (Vec<usize>, Vec<String>) {
++    (
++        vec![
++            learned::N_POKE_INTS,
++            learned::N_POKE_FLOATS,
++            learned::N_FIELD,
++            learned::M_LEAF,
++            learned::N_FEATURES,
++            learned::N_ROOT_WEIGHTS,
++        ],
++        learned::LEAF_NAMES.iter().map(|s| s.to_string()).collect(),
++    )
++}
++
  #[derive(Clone)]
  #[pyclass(
      name = "StateInstructions",
-@@ -1153,6 +1254,11 @@ fn py_poke_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
+@@ -1153,6 +1399,19 @@
      m.add_function(wrap_pyfunction!(generate_instructions, m)?)?;
      m.add_function(wrap_pyfunction!(id, m)?)?;
      m.add_function(wrap_pyfunction!(emm_matrix, m)?)?;
@@ -128,14 +272,21 @@ index a59243d..ce0657b 100644
 +    m.add_function(wrap_pyfunction!(load_evaluator, m)?)?;
 +    m.add_function(wrap_pyfunction!(evaluator_values, m)?)?;
 +    m.add_function(wrap_pyfunction!(mcts_with, m)?)?;
++    m.add_function(wrap_pyfunction!(matchup_inputs_from_strings, m)?)?;
++    m.add_function(wrap_pyfunction!(matchup_inputs, m)?)?;
++    m.add_function(wrap_pyfunction!(leaf_features_from_strings, m)?)?;
++    m.add_function(wrap_pyfunction!(matchup_layout, m)?)?;
++    m.add_function(wrap_pyfunction!(pair_features_from_strings, m)?)?;
++    m.add_function(wrap_pyfunction!(pair_features, m)?)?;
++    m.add_function(wrap_pyfunction!(pair_feature_names, m)?)?;
++    m.add_function(wrap_pyfunction!(move_table, m)?)?;
      m.add_function(wrap_pyfunction!(mcts, m)?)?;
      m.add_class::<PyState>()?;
      m.add_class::<PySide>()?;
-diff --git a/src/genx/generate_instructions.rs b/src/genx/generate_instructions.rs
-index 3b173fe..e60adc8 100644
---- a/src/genx/generate_instructions.rs
-+++ b/src/genx/generate_instructions.rs
-@@ -2491,7 +2491,7 @@ fn combine_duplicate_instructions(list_of_instructions: &mut Vec<StateInstructio
+diff -ruN a/src/genx/generate_instructions.rs b/src/genx/generate_instructions.rs
+--- a/src/genx/generate_instructions.rs	2026-07-19 10:33:44
++++ b/src/genx/generate_instructions.rs	2026-10-11 22:12:35
+@@ -2491,7 +2491,7 @@
      }
  }
  
@@ -144,17 +295,21 @@ index 3b173fe..e60adc8 100644
      let side = state.get_side_immutable(side_reference);
      let active_pkmn = side.get_active_immutable();
  
-diff --git a/src/genx/learned.rs b/src/genx/learned.rs
-new file mode 100644
-index 0000000..4517b52
---- /dev/null
-+++ b/src/genx/learned.rs
-@@ -0,0 +1,449 @@
+diff -ruN a/src/genx/learned.rs b/src/genx/learned.rs
+--- a/src/genx/learned.rs	1969-12-31 19:00:00
++++ b/src/genx/learned.rs	2026-10-11 22:48:03
+@@ -0,0 +1,761 @@
 +//! A learned leaf evaluation for MCTS (pokemon-rl, step 7): features of a state and a small
 +//! antisymmetric model on them, v(state) = g(x) - g(swap(x)), the logit of side one winning.
 +//! x = [side features of side one, of side two, cross features]; swap(x) exchanges the two
 +//! sides and negates the cross features (they are antisymmetric), so v(mirror) = -v exactly.
 +//! Training (Python) reads the same features through the `features_from_strings` binding.
++//!
++//! Matchup weights (step 8): a network (search/matchup_eval.py) looks at the root of a search once
++//! and sets weights for per-Pokemon leaf features, kept for every leaf of that search:
++//! v(state) += sum over side one's Pokemon p of w_p . phi_p(state) - the same over side two's
++//! + W[side one's active][side two's active] (both alive). `matchup_inputs` gives the network's
++//! inputs, `leaf_features` the phi.
 +
 +use super::abilities::Abilities;
 +use super::damage_calc::type_effectiveness_modifier;
@@ -162,7 +317,7 @@ index 0000000..4517b52
 +use super::generate_instructions::get_effective_speed;
 +use super::items::Items;
 +use super::state::PokemonVolatileStatus;
-+use crate::choices::MoveCategory;
++use crate::choices::{Choices, MoveCategory};
 +use crate::state::{
 +    Pokemon, PokemonBoostableStat, PokemonStatus, PokemonType, Side, SideReference, State,
 +};
@@ -499,6 +654,8 @@ index 0000000..4517b52
 +
 +/// g(x) = w2 . relu(W1 x + b1) (hidden > 0) or w . x (hidden 0); v = g(x) - g(swap(x)).
 +/// mode 1: leaf score sigmoid(v); mode 2: sigmoid(scale * (v - v(root))).
++/// root_weights (empty, or N_ROOT_WEIGHTS for one search): the matchup term added to v.
++#[derive(Clone)]
 +pub struct Evaluator {
 +    pub hidden: usize,
 +    pub w1: Vec<f32>,
@@ -507,6 +664,7 @@ index 0000000..4517b52
 +    pub mode: u8,
 +    pub scale: f32,
 +    linear: Vec<f32>, // hidden 0: v = linear . x
++    pub root_weights: Vec<f32>,
 +}
 +
 +impl Evaluator {
@@ -546,7 +704,39 @@ index 0000000..4517b52
 +            mode,
 +            scale,
 +            linear,
++            root_weights: Vec::new(),
 +        })
++    }
++
++    /// A copy with the matchup weights of one search: side one's 6 Pokemon x M_LEAF, side two's,
++    /// then W (36, side one's slot * 6 + side two's slot).
++    pub fn with_root_weights(&self, w: Vec<f32>) -> Result<Evaluator, String> {
++        if w.len() != N_ROOT_WEIGHTS {
++            return Err(format!("root_weights has {} values, expected {}", w.len(), N_ROOT_WEIGHTS));
++        }
++        let mut e = self.clone();
++        e.root_weights = w;
++        Ok(e)
++    }
++
++    fn matchup_value(&self, state: &State) -> f32 {
++        let w = &self.root_weights;
++        let mut phi = [0f32; M_LEAF];
++        let mut s = 0.0;
++        for slot in 0..6 {
++            if leaf_features(&state.side_one, slot, &mut phi) {
++                s += dot(&w[slot * M_LEAF..(slot + 1) * M_LEAF], &phi);
++            }
++            if leaf_features(&state.side_two, slot, &mut phi) {
++                s -= dot(&w[(6 + slot) * M_LEAF..(7 + slot) * M_LEAF], &phi);
++            }
++        }
++        let a1 = state.side_one.active_index as usize;
++        let a2 = state.side_two.active_index as usize;
++        if state.side_one.pokemon.pkmn[a1].hp > 0 && state.side_two.pokemon.pkmn[a2].hp > 0 {
++            s += w[12 * M_LEAF + a1 * 6 + a2];
++        }
++        s
 +    }
 +
 +    fn g(&self, x: &[f32]) -> f32 {
@@ -564,12 +754,18 @@ index 0000000..4517b52
 +    pub fn value(&self, state: &State) -> f32 {
 +        let mut x = [0f32; N_FEATURES];
 +        features(state, &mut x);
-+        if self.hidden == 0 {
-+            return dot(&self.linear, &x);
++        let v = if self.hidden == 0 {
++            dot(&self.linear, &x)
++        } else {
++            let mut y = [0f32; N_FEATURES];
++            swap(&x, &mut y);
++            self.g(&x) - self.g(&y)
++        };
++        if self.root_weights.is_empty() {
++            v
++        } else {
++            v + self.matchup_value(state)
 +        }
-+        let mut y = [0f32; N_FEATURES];
-+        swap(&x, &mut y);
-+        self.g(&x) - self.g(&y)
 +    }
 +
 +    /// The MCTS score of a leaf (0..1, for side one) given the root's value.
@@ -581,6 +777,271 @@ index 0000000..4517b52
 +            v
 +        };
 +        1.0 / (1.0 + (-z).exp())
++    }
++}
++
++// ---- matchup weights: per-Pokemon leaf features and the network's inputs ---------------------
++
++pub const LEAF_NAMES: [&str; 16] = [
++    "alive", "hp", "hp_sq", "burn", "paralyze", "sleep", "freeze", "poison", "item", "tera",
++    "active", "atk_boost", "def_boost", "spa_boost", "spd_boost", "spe_boost",
++];
++pub const M_LEAF: usize = LEAF_NAMES.len();
++pub const N_ROOT_WEIGHTS: usize = 12 * M_LEAF + 36;
++/// Per Pokemon: species, ability, item, types (2), tera type, status, moves (4); as the enums' values.
++pub const N_POKE_INTS: usize = 11;
++/// Per Pokemon: alive, hp, level, stats (6), active, terastallized, boosts (7, active only),
++/// status_good, sleep and rest turns, moves usable (4).
++pub const N_POKE_FLOATS: usize = 25;
++/// Weather (8 one-hot, turns), terrain (5 one-hot, turns), trick room (active, turns).
++pub const N_FIELD: usize = 17;
++pub const N_MATCHUP_INTS: usize = 12 * N_POKE_INTS + 2;
++pub const N_MATCHUP_FLOATS: usize = 12 * N_POKE_FLOATS + N_FIELD + N_FEATURES;
++
++/// The leaf features of the Pokemon in `slot` (M_LEAF, all 0 if it has fainted; returns alive).
++pub fn leaf_features(side: &Side, slot: usize, out: &mut [f32]) -> bool {
++    for v in out.iter_mut() {
++        *v = 0.0;
++    }
++    let p = &side.pokemon.pkmn[slot];
++    if p.hp <= 0 {
++        return false;
++    }
++    let f = p.hp as f32 / (p.maxhp.max(1)) as f32;
++    out[0] = 1.0;
++    out[1] = f;
++    out[2] = f * f;
++    match p.status {
++        PokemonStatus::BURN => out[3] = 1.0,
++        PokemonStatus::PARALYZE => out[4] = 1.0,
++        PokemonStatus::SLEEP => out[5] = 1.0,
++        PokemonStatus::FREEZE => out[6] = 1.0,
++        PokemonStatus::POISON | PokemonStatus::TOXIC => out[7] = 1.0,
++        PokemonStatus::NONE => {}
++    }
++    out[8] = b(p.item != Items::NONE);
++    out[9] = b(p.terastallized);
++    if side.active_index as usize == slot {
++        out[10] = 1.0;
++        out[11] = boost_multiplier(side.attack_boost);
++        out[12] = boost_multiplier(side.defense_boost);
++        out[13] = boost_multiplier(side.special_attack_boost);
++        out[14] = boost_multiplier(side.special_defense_boost);
++        out[15] = boost_multiplier(side.speed_boost);
++    }
++    true
++}
++
++fn pokemon_token(side: &Side, slot: usize, ints: &mut [i32], floats: &mut [f32]) {
++    for v in floats.iter_mut() {
++        *v = 0.0;
++    }
++    let p = &side.pokemon.pkmn[slot];
++    ints[0] = p.id as i32;
++    ints[1] = p.ability as i32;
++    ints[2] = p.item as i32;
++    ints[3] = p.types.0 as i32;
++    ints[4] = p.types.1 as i32;
++    ints[5] = p.tera_type as i32;
++    ints[6] = p.status as i32;
++    let alive = p.hp > 0;
++    floats[0] = b(alive);
++    if alive {
++        floats[1] = p.hp as f32 / (p.maxhp.max(1)) as f32;
++    }
++    floats[2] = p.level as f32 / 100.0;
++    floats[3] = p.maxhp as f32 / 400.0;
++    floats[4] = p.attack as f32 / 400.0;
++    floats[5] = p.defense as f32 / 400.0;
++    floats[6] = p.special_attack as f32 / 400.0;
++    floats[7] = p.special_defense as f32 / 400.0;
++    floats[8] = p.speed as f32 / 400.0;
++    let active = side.active_index as usize == slot;
++    floats[9] = b(active);
++    floats[10] = b(p.terastallized);
++    if active {
++        floats[11] = side.attack_boost as f32 / 6.0;
++        floats[12] = side.defense_boost as f32 / 6.0;
++        floats[13] = side.special_attack_boost as f32 / 6.0;
++        floats[14] = side.special_defense_boost as f32 / 6.0;
++        floats[15] = side.speed_boost as f32 / 6.0;
++        floats[16] = side.accuracy_boost as f32 / 6.0;
++        floats[17] = side.evasion_boost as f32 / 6.0;
++    }
++    floats[18] = b(status_is_good(p));
++    floats[19] = p.sleep_turns as f32 / 3.0;
++    floats[20] = p.rest_turns as f32 / 3.0;
++    for (k, mv) in [&p.moves.m0, &p.moves.m1, &p.moves.m2, &p.moves.m3].iter().enumerate() {
++        ints[7 + k] = mv.id as i32;
++        floats[21 + k] = b(mv.id != Choices::NONE && mv.pp > 0 && !mv.disabled);
++    }
++}
++
++fn field_features(state: &State, out: &mut [f32]) {
++    for v in out.iter_mut() {
++        *v = 0.0;
++    }
++    out[(state.weather.weather_type as usize).min(7)] = 1.0;
++    out[8] = state.weather.turns_remaining.max(0) as f32 / 5.0;
++    out[9 + (state.terrain.terrain_type as usize).min(4)] = 1.0;
++    out[14] = state.terrain.turns_remaining.max(0) as f32 / 5.0;
++    out[15] = b(state.trick_room.active);
++    out[16] = state.trick_room.turns_remaining.max(0) as f32 / 5.0;
++}
++
++/// The network's inputs: ints (N_MATCHUP_INTS: each Pokemon's N_POKE_INTS, side one's slots then
++/// side two's, then the two active slots) and floats (N_MATCHUP_FLOATS: each Pokemon's
++/// N_POKE_FLOATS, the field, the features of `features`).
++pub fn matchup_inputs(state: &State, ints: &mut [i32], floats: &mut [f32]) {
++    for (k, side) in [&state.side_one, &state.side_two].iter().enumerate() {
++        for slot in 0..6 {
++            let i = k * 6 + slot;
++            pokemon_token(
++                side,
++                slot,
++                &mut ints[i * N_POKE_INTS..(i + 1) * N_POKE_INTS],
++                &mut floats[i * N_POKE_FLOATS..(i + 1) * N_POKE_FLOATS],
++            );
++        }
++    }
++    ints[12 * N_POKE_INTS] = state.side_one.active_index as i32;
++    ints[12 * N_POKE_INTS + 1] = state.side_two.active_index as i32;
++    let o = 12 * N_POKE_FLOATS;
++    field_features(state, &mut floats[o..o + N_FIELD]);
++    features(state, &mut floats[o + N_FIELD..o + N_FIELD + N_FEATURES]);
++}
++
++// ---- pairwise matchup features (inputs of the matchup network) --------------------------------
++
++pub const PAIR_NAMES: [&str; 9] = [
++    "dmg", "dmg_back", "ko", "ko_back", "faster", "eff", "eff_back", "prio_ko", "prio_ko_back",
++];
++pub const N_PAIR: usize = PAIR_NAMES.len();
++
++/// The best damage of `att` against `def` as a fraction of def's max HP: the damage formula with
++/// unboosted stats, STAB, type effectiveness, ability immunities, burn and Thick Fat (no items,
++/// weather or screens); priority_only: only moves with priority > 0.
++fn raw_damage(att: &Pokemon, def: &Pokemon, priority_only: bool) -> f32 {
++    let mut best = 0.0f32;
++    let level = att.level as f32;
++    for mv in [&att.moves.m0, &att.moves.m1, &att.moves.m2, &att.moves.m3] {
++        let c = &mv.choice;
++        if mv.id == Choices::NONE || mv.disabled || mv.pp <= 0 || c.base_power <= 0.0 {
++            continue;
++        }
++        if priority_only && c.priority <= 0 {
++            continue;
++        }
++        let (a, d) = match c.category {
++            MoveCategory::Physical => (att.attack, def.defense),
++            MoveCategory::Special => (att.special_attack, def.special_defense),
++            _ => continue,
++        };
++        if immune_by_ability(def, &c.move_type) {
++            continue;
++        }
++        let eff = type_effectiveness_modifier(&c.move_type, def);
++        if eff == 0.0 {
++            continue;
++        }
++        let mut dmg = ((2.0 * level / 5.0 + 2.0) * c.base_power * a as f32 / (d.max(1) as f32))
++            / 50.0
++            + 2.0;
++        dmg *= stab(&c.move_type, att) * eff * 0.925;
++        if c.category == MoveCategory::Physical
++            && att.status == PokemonStatus::BURN
++            && att.ability != Abilities::GUTS
++        {
++            dmg *= 0.5;
++        }
++        if def.ability == Abilities::THICKFAT
++            && (c.move_type == PokemonType::FIRE || c.move_type == PokemonType::ICE)
++        {
++            dmg *= 0.5;
++        }
++        best = best.max(dmg);
++    }
++    best / (def.maxhp.max(1) as f32)
++}
++
++/// log2 of the best type effectiveness of att's damaging moves against def (-3: none hits).
++fn best_effectiveness(att: &Pokemon, def: &Pokemon) -> f32 {
++    let mut best = -3.0f32;
++    for mv in [&att.moves.m0, &att.moves.m1, &att.moves.m2, &att.moves.m3] {
++        let c = &mv.choice;
++        if mv.id == Choices::NONE
++            || c.base_power <= 0.0
++            || !matches!(c.category, MoveCategory::Physical | MoveCategory::Special)
++            || immune_by_ability(def, &c.move_type)
++        {
++            continue;
++        }
++        let eff = type_effectiveness_modifier(&c.move_type, def);
++        if eff > 0.0 {
++            best = best.max(eff.log2());
++        }
++    }
++    best
++}
++
++fn rough_speed(side: &Side, slot: usize) -> f32 {
++    let p = &side.pokemon.pkmn[slot];
++    let mut s = if side.active_index as usize == slot {
++        side.calculate_boosted_stat(PokemonBoostableStat::Speed) as f32
++    } else {
++        p.speed as f32
++    };
++    if p.status == PokemonStatus::PARALYZE && p.ability != Abilities::QUICKFEET {
++        s *= 0.5;
++    }
++    if p.item == Items::CHOICESCARF {
++        s *= 1.5;
++    }
++    if side.side_conditions.tailwind > 0 {
++        s *= 2.0;
++    }
++    s
++}
++
++/// For each pair of living Pokemon (side one's slot i, side two's slot j; 36 x N_PAIR, zeros when
++/// either has fainted): i's best damage on j and back (fractions of max HP, capped at 2), whether
++/// it KOs from the current HP, who is faster (+1 / -1, Trick Room included), the best type
++/// effectiveness each way, and whether a priority move KOs.
++pub fn pair_features(state: &State, out: &mut [f32]) {
++    for v in out.iter_mut() {
++        *v = 0.0;
++    }
++    let (s1, s2) = (&state.side_one, &state.side_two);
++    for i in 0..6 {
++        let p = &s1.pokemon.pkmn[i];
++        if p.hp <= 0 {
++            continue;
++        }
++        let hp_p = p.hp as f32 / (p.maxhp.max(1)) as f32;
++        let sp = rough_speed(s1, i);
++        for j in 0..6 {
++            let q = &s2.pokemon.pkmn[j];
++            if q.hp <= 0 {
++                continue;
++            }
++            let hp_q = q.hp as f32 / (q.maxhp.max(1)) as f32;
++            let o = &mut out[(i * 6 + j) * N_PAIR..(i * 6 + j + 1) * N_PAIR];
++            let (d_pq, d_qp) = (raw_damage(p, q, false), raw_damage(q, p, false));
++            o[0] = d_pq.min(2.0);
++            o[1] = d_qp.min(2.0);
++            o[2] = b(d_pq >= hp_q);
++            o[3] = b(d_qp >= hp_p);
++            let sq = rough_speed(s2, j);
++            let mut f = if sp > sq { 1.0 } else if sp < sq { -1.0 } else { 0.0 };
++            if state.trick_room.active {
++                f = -f;
++            }
++            o[4] = f;
++            o[5] = best_effectiveness(p, q);
++            o[6] = best_effectiveness(q, p);
++            o[7] = b(raw_damage(p, q, true) >= hp_q);
++            o[8] = b(raw_damage(q, p, true) >= hp_p);
++        }
 +    }
 +}
 +
@@ -599,27 +1060,25 @@ index 0000000..4517b52
 +    }
 +    REGISTRY.lock().unwrap().get(id - 1).cloned()
 +}
-diff --git a/src/genx/mod.rs b/src/genx/mod.rs
-index fcab748..ca22f92 100644
---- a/src/genx/mod.rs
-+++ b/src/genx/mod.rs
-@@ -5,4 +5,5 @@ pub mod damage_calc;
+diff -ruN a/src/genx/mod.rs b/src/genx/mod.rs
+--- a/src/genx/mod.rs	2026-07-19 10:33:44
++++ b/src/genx/mod.rs	2026-10-11 22:12:35
+@@ -5,4 +5,5 @@
  pub mod evaluate;
  pub mod generate_instructions;
  pub mod items;
 +pub mod learned;
  pub mod state;
-diff --git a/src/mcts.rs b/src/mcts.rs
-index f1fb0ae..76ceaf3 100644
---- a/src/mcts.rs
-+++ b/src/mcts.rs
+diff -ruN a/src/mcts.rs b/src/mcts.rs
+--- a/src/mcts.rs	2026-07-19 10:33:44
++++ b/src/mcts.rs	2026-10-11 22:12:35
 @@ -1,4 +1,5 @@
  use crate::engine::evaluate::evaluate;
 +use crate::engine::learned::Evaluator;
  use crate::engine::generate_instructions::generate_instructions_from_move_pair;
  use crate::engine::state::MoveChoice;
  use crate::instruction::StateInstructions;
-@@ -187,11 +188,13 @@ impl Node {
+@@ -187,11 +188,13 @@
          (*self.parent).backpropagate(score, state);
      }
  
@@ -636,7 +1095,7 @@ index f1fb0ae..76ceaf3 100644
          } else {
              if battle_is_over == -1.0 {
                  0.0
-@@ -253,10 +256,11 @@ fn mcts_iteration(
+@@ -253,10 +256,11 @@
      root_eval: &f32,
      children: &mut HashMap<(usize, usize, usize), Box<[Node]>>,
      rng: &mut impl Rng,
@@ -649,7 +1108,7 @@ index f1fb0ae..76ceaf3 100644
      unsafe { (*new_node).backpropagate(rollout_result, state) }
  }
  
-@@ -271,12 +275,13 @@ fn run_mcts_loop(
+@@ -271,12 +275,13 @@
      root_eval: &f32,
      children: &mut HashMap<(usize, usize, usize), Box<[Node]>>,
      limit: SearchLimit,
@@ -664,11 +1123,10 @@ index f1fb0ae..76ceaf3 100644
          }
          if root_node.times_visited >= 10_000_000 {
              break;
-@@ -302,6 +307,25 @@ pub fn perform_mcts(
-     side_two_options: Vec<MoveChoice>,
+@@ -303,6 +308,25 @@
      max_time: Duration,
      max_iterations: u32,
-+) -> MctsResult {
+ ) -> MctsResult {
 +    perform_mcts_with(
 +        state,
 +        side_one_options,
@@ -687,10 +1145,11 @@ index f1fb0ae..76ceaf3 100644
 +    max_time: Duration,
 +    max_iterations: u32,
 +    ev: Option<&Evaluator>,
- ) -> MctsResult {
++) -> MctsResult {
      let mut root_node = Node::new();
      unsafe {
-@@ -310,7 +334,10 @@ pub fn perform_mcts(
+         root_node.populate(side_one_options, side_two_options);
+@@ -310,7 +334,10 @@
      root_node.root = true;
      let mut children: HashMap<(usize, usize, usize), Box<[Node]>> = HashMap::new();
  
@@ -702,7 +1161,7 @@ index f1fb0ae..76ceaf3 100644
      let search_limit = if max_iterations > 0 {
          SearchLimit::Iterations(max_iterations)
      } else {
-@@ -322,6 +349,7 @@ pub fn perform_mcts(
+@@ -322,6 +349,7 @@
          &root_eval,
          &mut children,
          search_limit,
