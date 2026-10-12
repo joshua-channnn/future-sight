@@ -4,7 +4,10 @@ October 11-12, 2026; the first item of `step7.md` section 5.
 
 **Result: no gain in play; lin1_86 stays. A matchup-aware evaluation predicts results better
 offline, but the search with it is weaker (39-43% against the bot with lin1_86) and, with the
-matchup term scaled down to 0.3, level (51.2% ± 3.1% over 1,000 games).**
+matchup term scaled down to 0.3, level (51.2% ± 3.1% over 1,000 games). Trained instead on the
+search's own per-option values (section 4), it values the options one turn ahead much more like
+the deep search does (its best option is the search's 54% of the time against 48% for lin1_86),
+and the search with it is still level (50.5% ± 3.1%).**
 - The idea: `lin1_86` values every Pokemon's HP, status and boosts alike. A small network looks at
   the root of each search once and sets per-Pokemon weights (and a table for the active pair) that
   every leaf of that search uses; the leaves stay linear and fast (+4.9% per MCTS iteration).
@@ -19,6 +22,9 @@ matchup term scaled down to 0.3, level (51.2% ± 3.1% over 1,000 games).**
   predicted the result, and the search uses them to choose between lines that weren't played.
   Everything is built and checked (engine patch, network, trainer, `tools/check_matchup_eval.py`,
   `SearchPolicy(matchup=...)`), and the default bot is unchanged (`BEST_MATCHUP = None`).
+- Training on the search's values, so the evaluation learns what unplayed options lead to, fixes
+  the offline side but not play: the search already explores the root's options deeply itself, and
+  the evaluation it needs is the one at its frontier, several turns away (section 4).
 
 ## Files
 - `search/engine_patch/learned_eval.patch` (now also step 8's part; `build.sh` builds it):
@@ -35,10 +41,17 @@ matchup term scaled down to 0.3, level (51.2% ± 3.1% over 1,000 games).**
   `search/leaf_eval.py`: `best_settings()` returns it when `BEST_MATCHUP` is set.
 - `training/train_matchup_eval.py`: the trainer (pairs of states, below); `tools/check_matchup_eval.py`:
   the engine's features and values against the network's, antisymmetry, searches with root weights.
+- Section 4: `pe.option_features_from_strings` (in the patch: each option of side one played one
+  turn ahead against side two's weighted options, the successors' expected features);
+  `training/train_q_eval.py` (the successor cache `datasets/q_cache/`, the linear fits) and
+  `training/train_q_matchup.py` (the matchup network on the same objective, cache
+  `datasets/q_cache_mu/`, 25% of the training decisions). Both caches are gitignored, 4.7 GB.
 - Models (gitignored unless deployed): `models/leaf_eval/mu*.pt` with their `_lin.npz` (the linear
   part) and `_val.npz` (validation losses per pair, for paired comparisons).
 - Logs: `logs/mu*.log`; the A/Bs `logs/ab_mu5_*.log` (scale 1.4), `ab_mu5s10_*` (1.0), `ab_mu9s12_*`,
-  `ab_mu5w0_*` (a = 0), `ab_mu5w03_*` (a = 0.3), `ab_mu3_*` (stopped before its first readout).
+  `ab_mu5w0_*` (a = 0), `ab_mu5w03_*` (a = 0.3), `ab_mu3_*` (stopped before its first readout);
+  section 4: `logs/q_cache*.log`, `logs/linq_fit.log`, `logs/qmu*.log`, `logs/ab_linqls_*`,
+  `logs/ab_qmu1_*`, `logs/ab_qmu1w05_*`.
 
 ## 1. The model
 In mode 2 the search scores a leaf `sigmoid(1.4 * (v(leaf) - v(root)))`. With matchup weights
@@ -127,17 +140,49 @@ changes along the lines that were played predict the result; the search uses the
 between lines, and most of those were not played (which Pokemon takes a hit, who switches in).
 Small doses help where the full term misleads.
 
-## 4. What next
-- The matchup idea needs training data that shows what the moves that weren't played lead to;
-  more of the same self-play games won't fix the bias. Two ways: (1) exploration in the generator
-  (some decisions played off the best line, e.g. a random option among the legal ones, flagged
-  in the shards), so outcomes after unplayed alternatives exist; (2) train the leaf evaluation on
-  the search's own per-action values (`q` in the shards, both rounds): from each root, the engine's
-  successor states for each option (`generate_instructions`), and a loss that makes
-  `v(successor)` rank the options as the 120K-iteration search did. (2) needs no new games and
-  attacks the problem directly; it is the one to try if this line continues.
+## 4. Training on the search's own values
+The shards keep, for every decision, the search's per-option mean score `q` (120K iterations,
+the hand-written evaluation in round 0, lin1_86 at scale 1.4 in round 1). From each decision the
+engine plays every option of ours that the search visited at least 0.5% of the time one turn
+ahead (`pe.option_features_from_strings`): against the opponent's recorded choice that turn (its
+own search's visit shares, its top 4 options of at least 5%), over the turn's chance outcomes
+(branching on damage, as MCTS does at the root). The evaluation is linear in the successors'
+features once the root's weights are set, so each option needs only their expectation.
+1.0M decisions, 8.1 options each (skipped: 20% unsearched, ~2% where the opponent's row is another
+moment of the turn, ~1% whose options didn't map); decisions whose turn may end the battle are left
+out. Targets: t = logit(q) / 1.44 (round 0) or / 1.4 (round 1), the search's values in logits of
+its evaluation. The loss compares only a decision's options with each other (centered), with a
+free scale alpha: a deep value is compressed against one-turn values (alpha = 0.42 for lin1_86).
+The targets differ between the options of one decision, so memorizing a game's result can't help.
+
+Validation (13 held-out shards, 80K decisions, 640K options): how the one-turn lookahead with each
+evaluation values a decision's options against the search (mean per-decision correlation of the
+centered values; how often its best option is the search's best by q, and its most visited):
+
+| evaluation | correlation | = best q | = most visited | spread | in play vs lin1_86 |
+| --- | --- | --- | --- | --- | --- |
+| lin1_86 | 0.663 | 47.7% | 48.9% | 0.31 | |
+| lin, least squares on t (rescaled to lin1_86's spread: `linq_ls`) | 0.694 | 50.8% | 52.2% | 0.31 | 48.8% ± 4.9% (195 / 400, stopped) |
+| lin, outcome loss + 10 x this loss (`train_q_eval.py`) | 0.694 | 50.7% | 52.1% | 0.57 | |
+| matchup network on t, lin1_86 fixed (`qmu1`, 4 epochs) | 0.729 | 53.5% | 55.1% | 0.46 | 47.5% (95 / 200, stopped) |
+| the same, matchup term x 0.5 | | | | | **50.5% ± 3.1% (505 / 1,000)** |
+| `qmu2` (8 epochs) / `qmu3` (d 64, 2 layers) | 0.733 / 0.737 | 53.8% / 54.1% | 55.4% / 55.6% | 0.46 | |
+
+(The matchup bots get 536 iterations per ms against 565, as in section 3; `linq_ls` 565.) The linear
+model can't use the better targets much; the network can, and with ~250K decisions it saturates
+near 0.73. Neither plays better. A one-turn lookahead that agrees with the deep search about the
+root's options is something the search computes anyway: it explores those options with 120K
+iterations. What its leaves need is a better evaluation at the frontier, three to six turns from
+the root, and weights fit to the root's one-turn successors don't carry there.
+
+## 5. What next
+- Three learned evaluations have now failed to beat lin1_86 in play (on game results, on the
+  search's values, linear and per-matchup). If the evaluation line continues, the version that
+  aims at the frontier is TreeStrap: after each search, export the tree's nodes with enough
+  visits (state features, backed-up value) from the engine and train the evaluation toward every
+  node's value, not only the root's children. It needs an engine change (a node dump in
+  `perform_mcts_with`) and new data from the generator.
 - Otherwise the cheaper items of `step7.md` section 5: the leaf scale between 1.2 and 1.6, the
   exploration constant, the ladder.
-- Reuse: `mcts_with(..., root_weights)` takes any per-search weights, so a better way of setting
-  them plugs into the same engine code; `MatchupLinear` (419 parameters) is the low-capacity
-  starting point, `MatchupNet` with `--ids none --move-props --pairs --no-value` the network.
+- Reuse: `mcts_with(..., root_weights)` takes any per-search weights; `option_features_from_strings`
+  any one-turn lookahead; `MatchupNet` with `--ids none --move-props --pairs` is the network.

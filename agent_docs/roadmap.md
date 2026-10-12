@@ -6,7 +6,11 @@
   states it predicts results 0.0063 better in log-loss than lin1_86's linear evaluation (after
   removing what let it memorize games), but the search with it loses 7-10 points against the bot
   with lin1_86 and, scaled down to 0.3, is level (51.2% ± 3.1% over 1,000 games). The weights fit
-  the lines the bot played; the search chooses between lines it didn't. lin1_86 stays.
+  the lines the bot played; the search chooses between lines it didn't. Trained instead on the
+  search's own per-option values (every option played one turn ahead), the evaluation agrees with
+  the deep search about the best option 54% of the time against lin1_86's 48%, and the search with
+  it is still level (50.5% ± 3.1%): the search explores the root's options itself, and its leaves
+  are several turns deeper. lin1_86 stays.
 - **Step 7 (learning from the search) is done: a learned leaf evaluation is the gain** (`step7.md`).
   The search bot played itself (16K games, 1.1M decisions recorded with visit shares, values and
   engine states). A linear model of 110 engine-state features, fit to the results and used by the
@@ -143,9 +147,11 @@
 8. Done (October 11-12, 2026; `step8.md`), no gain: a matchup-aware leaf evaluation (a small
    network sets per-Pokémon weights once per search, the leaves stay linear). Better offline
    prediction, a weaker (full weight) or level (0.3) search.
-9. Next (`step8.md` section 4): train the leaf evaluation on the search's own per-action values
-   (successor states ranked as the deep search ranked the options) instead of game results, or the
-   cheap items: a finer sweep of the leaf scale (1.2-1.6), the exploration constant, the ladder.
+   Then trained on the search's own per-option values (`step8.md` section 4): better one-turn
+   agreement with the search, no gain in play.
+9. Next (`step8.md` section 5): the cheap items, a finer sweep of the leaf scale (1.2-1.6), the
+   exploration constant, the ladder; or, to keep at the evaluation, TreeStrap (train toward the
+   values of every searched node, which needs a node dump from the engine).
 
 Two Wang settings tuned on 3v3 battles, which are half as long, were A/B'd on v20: `clip_range_vf`
 (None only gave a faster start) and `gae_lambda` (0.95 was clearly worse). Results in `v20.md`.

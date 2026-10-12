@@ -66,6 +66,10 @@ Step 8 (matchup weights for the leaf evaluation; built and tested, no gain in pl
   `SearchPolicy(matchup=<.pt>, matchup_weight=a)`; `search/leaf_eval.py` `BEST_MATCHUP` (None).
 - `training/train_matchup_eval.py` (pairs of states; ids let it memorize games: use
   `--ids none --move-props --pairs --no-value`); checks: `tools/check_matchup_eval.py`.
+- Trained on the search's own per-option values instead (`pe.option_features_from_strings` plays
+  each option one turn ahead): `training/train_q_eval.py` (linear; cache `datasets/q_cache/`),
+  `training/train_q_matchup.py` (the network; cache `datasets/q_cache_mu/`). Better agreement with
+  the deep search one turn ahead, no gain in play either.
 
 v17-v19 (SB3):
 - `envs/rl_player_6v6_v18.py`: the environment. Observation (677 floats: 12 Pokémon blocks,

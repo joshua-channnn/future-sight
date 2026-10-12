@@ -8,8 +8,9 @@ The search bot (`search/policy.py`; step 6: poke-engine MCTS over opponent teams
 fork's own random-battle generator, Foul Play's recipe in our own code, with v21 as prior and
 hidden-set model, `agent_docs/step6.md`; step 7: a leaf evaluation learned from the search's own
 games in place of Foul Play's hand-written one, `agent_docs/step7.md`; a matchup-aware version
-of it, step 8, predicted results better but didn't play better, `agent_docs/step8.md`), at Foul
-Play's default budget (~200 ms per decision), counting actual wins:
+of it, step 8, predicted results better but didn't play better, nor did versions trained on the
+search's own values, `agent_docs/step8.md`), at Foul Play's default budget (~200 ms per decision),
+counting actual wins:
 
 | Opponent | Games | Win Rate (95% CI) |
 |----------|-------|-------------------|
