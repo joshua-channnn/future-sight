@@ -70,6 +70,14 @@ Step 8 (matchup weights for the leaf evaluation; built and tested, no gain in pl
   each option one turn ahead): `training/train_q_eval.py` (linear; cache `datasets/q_cache/`),
   `training/train_q_matchup.py` (the network; cache `datasets/q_cache_mu/`). Better agreement with
   the deep search one turn ahead, no gain in play either.
+- TreeStrap (trained toward every searched node's value):
+  - `pe.mcts_tree` (in the patch) exports a search's nodes with their values; checked by
+    `tools/check_treestrap.py`.
+  - `training/gen_treestrap.py` generates the data in `datasets/treestrap_r0/`;
+    `training/train_treestrap.py` fits it (linear, or a small network).
+  - The network agrees with the search much better than lin1_86, and is level in play.
+  - `tools/compare_picks.py` counts how often an evaluation changes the search's pick: the
+    network changes 8.6% against the search's own 6.4% noise.
 
 v17-v19 (SB3):
 - `envs/rl_player_6v6_v18.py`: the environment. Observation (677 floats: 12 Pokémon blocks,

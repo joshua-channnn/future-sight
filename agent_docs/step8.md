@@ -1,13 +1,16 @@
 # Step 8: matchup weights for the leaf evaluation
 
-October 11-12, 2026; the first item of `step7.md` section 5.
+October 11-13, 2026; the first item of `step7.md` section 5.
 
 **Result: no gain in play; lin1_86 stays. A matchup-aware evaluation predicts results better
 offline, but the search with it is weaker (39-43% against the bot with lin1_86) and, with the
 matchup term scaled down to 0.3, level (51.2% ± 3.1% over 1,000 games). Trained instead on the
 search's own per-option values (section 4), it values the options one turn ahead much more like
 the deep search does (its best option is the search's 54% of the time against 48% for lin1_86),
-and the search with it is still level (50.5% ± 3.1%).**
+and the search with it is still level (50.5% ± 3.1%). Trained toward every searched node's value
+(TreeStrap, section 5), a small network agrees with the search best of all (correlation 0.898 vs
+0.858) and is level as well (50.5% ± 3.1%): it changes the search's pick in 8.6% of decisions,
+against 6.4% for the search's own noise.**
 - The idea: `lin1_86` values every Pokemon's HP, status and boosts alike. A small network looks at
   the root of each search once and sets per-Pokemon weights (and a table for the active pair) that
   every leaf of that search uses; the leaves stay linear and fast (+4.9% per MCTS iteration).
@@ -25,6 +28,10 @@ and the search with it is still level (50.5% ± 3.1%).**
 - Training on the search's values, so the evaluation learns what unplayed options lead to, fixes
   the offline side but not play: the search already explores the root's options deeply itself, and
   the evaluation it needs is the one at its frontier, several turns away (section 4).
+- TreeStrap aims at that frontier. The engine exports the nodes of each search (`pe.mcts_tree`).
+  The evaluation is trained so that each node's value relative to the root matches what the
+  search below that node found. The fit is much closer, but the search's picks barely move: the
+  leaf evaluation has little leverage left at this budget (section 5).
 
 ## Files
 - `search/engine_patch/learned_eval.patch` (now also step 8's part; `build.sh` builds it):
@@ -48,12 +55,23 @@ and the search with it is still level (50.5% ± 3.1%).**
   `datasets/q_cache_mu/`, 25% of the training decisions). Both caches (gitignored, 4.7 GB) were
   deleted after the step: `train_q_eval.py` rebuilds its own on the first run, the network's is
   built as the `train_q_matchup.py` docstring shows (about 5 minutes each).
+- Section 5 (TreeStrap):
+  - `pe.mcts_tree(state, ms, iterations, evaluator, min_visits, max_depth=30)` (in the patch)
+    returns the search's result and its nodes: features, depth, parent, visits, `q`, whether the
+    battle is over.
+  - `tools/check_treestrap.py` checks it.
+  - `training/gen_treestrap.py` generates the data in `datasets/treestrap_r0/` (gitignored,
+    802 MB).
+  - `training/train_treestrap.py` fits it (`--mode ls | combined | mlp`).
+  - `tools/compare_picks.py` counts how often an evaluation changes the search's pick.
 - Models (gitignored unless deployed): `models/leaf_eval/mu*.pt` with their `_lin.npz` (the linear
-  part) and `_val.npz` (validation losses per pair, for paired comparisons).
+  part) and `_val.npz` (validation losses per pair, for paired comparisons); section 5's
+  `models/leaf_eval/ts_r0.npz` (`_raw`: before the rescaling), `ts_r0_mlp8.npz`, `ts_r0_mlp16.npz`.
 - Logs: `logs/mu*.log`; the A/Bs `logs/ab_mu5_*.log` (scale 1.4), `ab_mu5s10_*` (1.0), `ab_mu9s12_*`,
   `ab_mu5w0_*` (a = 0), `ab_mu5w03_*` (a = 0.3), `ab_mu3_*` (stopped before its first readout);
   section 4: `logs/q_cache*.log`, `logs/linq_fit.log`, `logs/qmu*.log`, `logs/ab_linqls_*`,
-  `logs/ab_qmu1_*`, `logs/ab_qmu1w05_*`.
+  `logs/ab_qmu1_*`, `logs/ab_qmu1w05_*`; section 5: `logs/treestrap_gen_r0.log`,
+  `logs/treestrap_fit_*.log`, `logs/ab_tsmlp16_eq_*`.
 
 ## 1. The model
 In mode 2 the search scores a leaf `sigmoid(1.4 * (v(leaf) - v(root)))`. With matchup weights
@@ -177,14 +195,92 @@ root's options is something the search computes anyway: it explores those option
 iterations. What its leaves need is a better evaluation at the frontier, three to six turns from
 the root, and weights fit to the root's one-turn successors don't carry there.
 
-## 5. What next
-- Three learned evaluations have now failed to beat lin1_86 in play (on game results, on the
-  search's values, linear and per-matchup). If the evaluation line continues, the version that
-  aims at the frontier is TreeStrap: after each search, export the tree's nodes with enough
-  visits (state features, backed-up value) from the engine and train the evaluation toward every
-  node's value, not only the root's children. It needs an engine change (a node dump in
-  `perform_mcts_with`) and new data from the generator.
-- Otherwise the cheaper items of `step7.md` section 5: the leaf scale between 1.2 and 1.6, the
-  exploration constant, the ladder.
-- Reuse: `mcts_with(..., root_weights)` takes any per-search weights; `option_features_from_strings`
-  any one-turn lookahead; `MatchupNet` with `--ids none --move-props --pairs` is the network.
+## 5. TreeStrap: training toward every searched node's value
+October 12-13, 2026. Section 4 aimed at the root's one-turn successors; this aims at the nodes
+where the search uses its evaluation. After a search, `pe.mcts_tree` (in the patch; MCTS nodes now
+keep a `total_score`) walks the tree and returns every node with at least `min_visits` visits: its
+engine features, depth, parent, visits, whether the battle is over, and side one's mean score `q`
+over the iterations through it. `tools/check_treestrap.py`: a node's visits times `q` is its own
+rollout (scored from its dumped features) plus its children's, its visits are its children's plus
+0 or 1 (~6% of nodes never rolled out themselves: chance outcomes first reached after their pair
+was expanded), the root matches the search's result and `features_from_strings`, and the filters
+hold.
+
+Data (`training/gen_treestrap.py`, `datasets/treestrap_r0/`): every 10th searched decision of both
+self-play rounds (the true state, the decider as side one), searched again with lin1_86 at scale
+1.4 and 56,500 iterations (the A/Bs' budget). Each search has ~610 nodes with at least 25 visits,
+of which the root and 32 random others are kept. 108,697 searches, 3.3M nodes, 802 MB, 62 minutes
+on 4 processes. By depth: 1 15% (median 119 visits), 2 41%, 3 27%, 4 12%, 5+ 6% (~45 visits).
+Nodes where the battle is over (5%) are left out. The target is `t = logit(q) / 1.4`: mode 2
+scores a leaf `sigmoid(1.4 * (v(leaf) - v(root)))`, so `t` is the `v(n) - v(root)` that a leaf at
+n would need to score what the search below n found. `training/train_treestrap.py` fits the
+model's `v(n) - v(root)` to `t` by least squares:
+- `--mode ls`: lin's 58 coefficients, closed form.
+- `--mode mlp`: `train_leaf_eval`'s antisymmetric one-layer ReLU network, started as lin1_86 with
+  two of its units (`--init-lin`), so it learns corrections.
+
+Both fits are rescaled to lin1_86's spread of node values, since the leaf scale is tuned to it.
+They come out 10-15% narrower, as any least-squares fit does: its spread is the correlation times
+the targets' spread.
+
+Validation: 13 held-out shards, 8,558 searches, 259K nodes. The columns are the correlation of
+`v(n) - v(root)` with `t` (overall, then by depth), R^2 at the best scale, and the roots' log-loss
+against the game results:
+
+| evaluation | correlation | depth 1 | 2 | 3+ | R^2 | roots' log-loss |
+| --- | --- | --- | --- | --- | --- | --- |
+| lin1_86 | 0.858 | 0.696 | 0.856 | 0.883 | 0.736 | 0.5301 |
+| lin, least squares (`ts_r0`; cosine 0.956 to lin1_86) | 0.868 | 0.714 | 0.869 | 0.890 | 0.754 | 0.5323 |
+| network, 8 units (`ts_r0_mlp8`) | 0.894 | 0.755 | 0.888 | 0.916 | 0.799 | 0.5296 |
+| network, 16 units (`ts_r0_mlp16`) | 0.898 | 0.767 | 0.892 | 0.920 | 0.806 | 0.5298 |
+
+On the first 41 shards (28 for training) the linear fit is the same, and the network reaches
+0.885 with 8 units, 0.887 with 16 and 0.887 with 32. The linear model can't use these targets;
+the network can, without losing anything on the results. What it learns isn't a squashing of
+the value: the best monotone `h` in `h(v_lin(n)) - h(v_lin(root))` gets 0.857, and a free table
+of (`v_lin(n)`, `v_lin(root)`) 0.855. It learns interactions between features, which matter most
+in lopsided positions: 0.727 -> 0.827 where `|v(root)| > 3`, 0.903 -> 0.921 where it is under 0.5.
+
+In the search, the 16-unit network at lin1_86's 565 iterations per ms (equal iterations, the
+fairest test of the evaluation itself): **50.5% ± 3.1% (505 / 1,000; 125, 114, 130, 136 of
+250)**. Cost, measured in one process on an idle M3, in iterations per ms: 589 for the
+hand-written evaluation, 546 for lin1_86, 543 for `ts_r0` and 463 for the 16-unit network. The
+network is 15% slower than lin1_86, so a level result at equal iterations is a loss at equal time,
+and the equal-time A/B wasn't run.
+
+Why closer agreement doesn't change play: the search's picks hardly depend on it.
+`tools/compare_picks.py` searches 210 stored decisions (3 held-out shards of round 1, true states,
+56,500 iterations) with each evaluation and counts how often the most visited option differs from
+lin1_86's. The table averages two runs, since one run of 210 moves by about 2 points:
+
+| evaluation | pick differs from lin1_86's (two runs) |
+| --- | --- |
+| lin1_86, a second run (the search's own noise) | 6.4% (5.7%, 7.1%) |
+| the 16-unit network | 8.6% (7.6%, 9.5%) |
+| the linear fit | 8.8% (9.0%, 8.6%) |
+| the hand-written evaluation (lin1_86 beat it by 3.6 points in step 7) | 21.0% (21.4%, 20.5%) |
+
+Section 3's matchup term at full weight changed 16-22% and lost 7-10 points. The network changes
+about 2% of decisions beyond the noise, against ~15% for the hand-written evaluation. lin1_86's
+3.6 points came with ~15%. If the network's changes were worth as much per decision, they would
+give about half a point, which 1,000 games can't measure.
+
+## 6. What next
+- Four learned evaluations have failed to beat lin1_86 in play:
+  - the matchup network trained on game results (sections 2-3);
+  - the linear model trained on the search's per-option values (section 4);
+  - the matchup network trained on the same values (section 4);
+  - TreeStrap's network (section 5). It agrees with the search best, and changes its picks in
+    only ~2% of decisions beyond the noise.
+
+  At this budget the leaf evaluation has little leverage left. Before an A/B of a new
+  evaluation, check with `tools/compare_picks.py` how often it changes the search's pick beyond
+  the ~6% noise.
+- The cheaper items of `step7.md` section 5: the leaf scale between 1.2 and 1.6, the exploration
+  constant, the ladder.
+- Reuse:
+  - `mcts_with(..., root_weights)` takes any per-search weights.
+  - `option_features_from_strings` does any one-turn lookahead.
+  - `MatchupNet` with `--ids none --move-props --pairs` is the network.
+  - `mcts_tree` exports any statistics of the search tree.
+  - `train_treestrap.py --mode mlp --init-lin` fits a network that starts as lin1_86.

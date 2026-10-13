@@ -10,7 +10,10 @@
   search's own per-option values (every option played one turn ahead), the evaluation agrees with
   the deep search about the best option 54% of the time against lin1_86's 48%, and the search with
   it is still level (50.5% ± 3.1%): the search explores the root's options itself, and its leaves
-  are several turns deeper. lin1_86 stays.
+  are several turns deeper. TreeStrap, trained toward the value of every node the search visited
+  25+ times, gives a network that agrees with the search much better (correlation 0.898 vs 0.858)
+  and is level in play too (50.5% ± 3.1% over 1,000 games). It changes the search's pick in only
+  8.6% of decisions, against the 6.4% noise of two runs of the same search. lin1_86 stays.
 - **Step 7 (learning from the search) is done: a learned leaf evaluation is the gain** (`step7.md`).
   The search bot played itself (16K games, 1.1M decisions recorded with visit shares, values and
   engine states). A linear model of 110 engine-state features, fit to the results and used by the
@@ -148,10 +151,14 @@
    network sets per-Pokémon weights once per search, the leaves stay linear). Better offline
    prediction, a weaker (full weight) or level (0.3) search.
    Then trained on the search's own per-option values (`step8.md` section 4): better one-turn
-   agreement with the search, no gain in play.
-9. Next (`step8.md` section 5): the cheap items, a finer sweep of the leaf scale (1.2-1.6), the
-   exploration constant, the ladder; or, to keep at the evaluation, TreeStrap (train toward the
-   values of every searched node, which needs a node dump from the engine).
+   agreement with the search, no gain in play. Then TreeStrap (October 12-13, `step8.md` section
+   5): trained toward the value of every searched node, a small network agrees with the search much
+   better than lin1_86 (correlation 0.898 vs 0.858) and is level in play. It changes the search's
+   pick in 8.6% of decisions, against 6.4% for the search's own noise: at this budget the leaf
+   evaluation has little leverage left.
+9. Next (`step8.md` section 6): the cheap items, a finer sweep of the leaf scale (1.2-1.6), the
+   exploration constant, the ladder. Before any new leaf evaluation's A/B, check with
+   `tools/compare_picks.py` how often it changes the search's pick.
 
 Two Wang settings tuned on 3v3 battles, which are half as long, were A/B'd on v20: `clip_range_vf`
 (None only gave a faster start) and `gae_lambda` (0.95 was clearly worse). Results in `v20.md`.
