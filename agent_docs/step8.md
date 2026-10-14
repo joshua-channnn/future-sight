@@ -64,7 +64,8 @@ against 6.4% for the search's own noise.**
     battle is over.
   - `tools/check_treestrap.py` checks it.
   - `training/gen_treestrap.py` generates the data in `datasets/treestrap_r0/` (gitignored,
-    802 MB).
+    802 MB; deleted after the step). Rebuilding it from the self-play shards takes about an hour
+    with 4 workers: `python3 -m training.gen_treestrap --out datasets/treestrap_r0`.
   - `training/train_treestrap.py` fits it (`--mode ls | combined | mlp`).
   - `tools/compare_picks.py` counts how often an evaluation changes the search's pick.
 - Models (gitignored unless deployed): `models/leaf_eval/mu*.pt` with their `_lin.npz` (the linear

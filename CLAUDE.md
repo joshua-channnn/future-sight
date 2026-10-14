@@ -73,8 +73,9 @@ Step 8 (matchup weights for the leaf evaluation; built and tested, no gain in pl
 - TreeStrap (trained toward every searched node's value):
   - `pe.mcts_tree` (in the patch) exports a search's nodes with their values; checked by
     `tools/check_treestrap.py`.
-  - `training/gen_treestrap.py` generates the data in `datasets/treestrap_r0/`;
-    `training/train_treestrap.py` fits it (linear, or a small network).
+  - `training/gen_treestrap.py` generates the data in `datasets/treestrap_r0/` (deleted after
+    the step; it rebuilds in about an hour); `training/train_treestrap.py` fits it (linear, or a
+    small network).
   - The network agrees with the search much better than lin1_86, and is level in play.
   - `tools/compare_picks.py` counts how often an evaluation changes the search's pick: the
     network changes 8.6% against the search's own 6.4% noise.
