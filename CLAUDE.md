@@ -78,6 +78,8 @@ Step 8 (matchup weights for the leaf evaluation; built and tested, no gain in pl
   - The network agrees with the search much better than lin1_86, and is level in play.
   - `tools/compare_picks.py` counts how often an evaluation changes the search's pick: the
     network changes 8.6% against the search's own 6.4% noise.
+- Twice the search at the ladder's budget (2 x 500 ms against 2 x 250 ms per decision) is level:
+  51.5% ± 2.2% over 2,000 games, so the ladder bot keeps 2 x 250 ms (`step8.md` section 6).
 
 v17-v19 (SB3):
 - `envs/rl_player_6v6_v18.py`: the environment. Observation (677 floats: 12 Pokémon blocks,

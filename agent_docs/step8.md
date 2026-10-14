@@ -1,6 +1,6 @@
 # Step 8: matchup weights for the leaf evaluation
 
-October 11-13, 2026; the first item of `step7.md` section 5.
+October 11-14, 2026; the first item of `step7.md` section 5.
 
 **Result: no gain in play; lin1_86 stays. A matchup-aware evaluation predicts results better
 offline, but the search with it is weaker (39-43% against the bot with lin1_86) and, with the
@@ -32,6 +32,9 @@ against 6.4% for the search's own noise.**
   The evaluation is trained so that each node's value relative to the root matches what the
   search below that node found. The fit is much closer, but the search's picks barely move: the
   leaf evaluation has little leverage left at this budget (section 5).
+- More search doesn't measurably help either. At the ladder's budget (2 x 250 ms per decision),
+  twice the iterations wins 51.5% ± 2.2% over 2,000 games against the same bot (section 6), so the
+  ladder stays at 2 x 250 ms.
 
 ## Files
 - `search/engine_patch/learned_eval.patch` (now also step 8's part; `build.sh` builds it):
@@ -71,7 +74,8 @@ against 6.4% for the search's own noise.**
   `ab_mu5w0_*` (a = 0), `ab_mu5w03_*` (a = 0.3), `ab_mu3_*` (stopped before its first readout);
   section 4: `logs/q_cache*.log`, `logs/linq_fit.log`, `logs/qmu*.log`, `logs/ab_linqls_*`,
   `logs/ab_qmu1_*`, `logs/ab_qmu1w05_*`; section 5: `logs/treestrap_gen_r0.log`,
-  `logs/treestrap_fit_*.log`, `logs/ab_tsmlp16_eq_*`.
+  `logs/treestrap_fit_*.log`, `logs/ab_tsmlp16_eq_*`; section 6: `logs/ab_budget2x_seat*` (the
+  first 1,000 games) and `logs/ab_budget2x_r2_*` (the second).
 
 ## 1. The model
 In mode 2 the search scores a leaf `sigmoid(1.4 * (v(leaf) - v(root)))`. With matchup weights
@@ -265,7 +269,41 @@ about 2% of decisions beyond the noise, against ~15% for the hand-written evalua
 3.6 points came with ~15%. If the network's changes were worth as much per decision, they would
 give about half a point, which 1,000 games can't measure.
 
-## 6. What next
+## 6. Twice the search at the ladder's budget
+Step 6 measured more search at Foul Play's budget: 2.5x the iterations per sample won 53.5% ±
+3.1% against the same bot (~25 Elo). The ladder bot has used 2.5x the budget since: 2 x 250 ms
+per decision, 4 x 125 ms early. Here the question is whether doubling it again would pay on the
+ladder, where time is free (~0.6 s per decision now, ~1.1 s at 2 x 500 ms).
+
+The A/B: the deployed bot (lin1_86 at scale 1.4, the v21 prior at 0.15, set_gamma 0.5, item
+inference) at 2 x 500 ms (4 x 250 ms early) against itself at the ladder's 2 x 250 ms. Both run on
+fixed iterations, 565 per ms (282,500 against 141,250 per sample). Each batch is 4 processes of 250
+games, two per seat:
+
+    B='"prior_weight": 0.15, "set_gamma": 0.5, "infer_items": true, "net": true,
+       "leaf_eval": "models/leaf_eval/lin1_86.npz", "leaf_mode": 2, "leaf_scale": 1.4,
+       "iters_per_ms": 565'
+    python3 -m eval.search_eval --opponents search --config "{$B, \"ms\": 500, \"early_ms\": 250}" \
+        --opp-config "{$B, \"ms\": 250, \"early_ms\": 125}" --budget-iters-per-ms 565 \
+        --ms 250 --early-ms 125 --battles 250 --seat 1 --port 8123
+
+| batch | result | wins per process (of 250) |
+| --- | --- | --- |
+| first 1,000 | 51.4% ± 3.1% | 115, 139 (seat 1); 144, 116 (seat 2) |
+| second 1,000 | 51.6% ± 3.1% | 134, 129 (seat 1); 132, 121 (seat 2) |
+| **all 2,000** | **51.5% ± 2.2% (1,030 / 2,000)** | seat 1 51.7%, seat 2 51.3% |
+
+The result is level within the noise: about +10 Elo, with a 95% CI of -5 to +26. More search pays
+less as the budget grows. At the ladder's budget, doubling it isn't measurable in 2,000 games. The
+ladder stays at 2 x 250 ms. Running the two samples in parallel would also double the search (it
+needs the engine binding to release the GIL), so it isn't worth building for this.
+
+Cost: 5.4 and 6.0 hours per batch on the M3. With 4 processes, decisions took 1.5-1.6 s at
+2 x 500 ms and 0.7-0.8 s at 2 x 250 ms, 40-50% slower than one process alone (1.1 s and 0.5 s).
+Two single decisions took 14 s and 79 s, against ~2 s at the 95th percentile. The Mac was deep in
+swap afterwards (9.4 of 10 GB used), the likely cause, but this wasn't checked.
+
+## 7. What next
 - Four learned evaluations have failed to beat lin1_86 in play:
   - the matchup network trained on game results (sections 2-3);
   - the linear model trained on the search's per-option values (section 4);
@@ -276,8 +314,11 @@ give about half a point, which 1,000 games can't measure.
   At this budget the leaf evaluation has little leverage left. Before an A/B of a new
   evaluation, check with `tools/compare_picks.py` how often it changes the search's pick beyond
   the ~6% noise.
+- More search per decision isn't measurable either: twice the ladder's budget is level
+  (section 6).
 - The cheaper items of `step7.md` section 5: the leaf scale between 1.2 and 1.6, the exploration
-  constant, the ladder.
+  constant, the ladder. No change since lin1_86 has gained measurably, so the ladder (play
+  against people, not run yet) is the most informative test left.
 - Reuse:
   - `mcts_with(..., root_weights)` takes any per-search weights.
   - `option_features_from_strings` does any one-turn lookahead.
