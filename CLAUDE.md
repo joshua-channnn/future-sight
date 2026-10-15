@@ -92,7 +92,8 @@ v17-v19 (SB3):
 - `players/ppo_player.py`: loads any saved model (env/extractor chosen via `ARCH_REGISTRY`). Used
   for self-play opponents and, with `--model <zip>`, `players/play_bot.py` (local play) and
   `players/ladder_bot.py` (both run the search bot by default since October 10, 2026, with step
-  7's learned leaf evaluation since October 11).
+  7's learned leaf evaluation since October 11). `players/ladder_parallel.py` runs ladder_bot.py
+  with several games at once (`agent_docs/ladder.md`).
 - `eval/ppo_test.py` (vs Random / SimpleHeuristics / another model) and `eval/foulplay_eval.py`.
 - `envs/rl_player_6v6.py`, `networks/embedding_extractor.py`, `networks/embedding_extractor_sp.py`:
   v17 code, kept only so v17 checkpoints still load.
@@ -155,3 +156,4 @@ v17-v19 (SB3):
   evaluation): `agent_docs/step7.md`; the brief it was built from: `agent_docs/step7_brief.md`
 - step 8 (matchup weights for the leaf evaluation; why better prediction didn't make the search
   stronger): `agent_docs/step8.md`
+- the ladder (results, running several games at once): `agent_docs/ladder.md`

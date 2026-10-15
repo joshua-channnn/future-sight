@@ -1,6 +1,9 @@
 # Roadmap (from the September 2026 review)
 
 ## Where things stand
+- **The ladder (October 14-15, 2026): 69-31 over 100 games** (`ladder.md`). On the public server
+  the search bot took the account from Elo 1162 to 1869 and GXE 38 to 89.7 (Glicko 1910 ± 42).
+  The ladder's top 500 started at 2106.
 - **Step 8 (matchup weights for the leaf evaluation) is done, with no gain** (`step8.md`). A small
   network sets per-Pokemon leaf weights once per search; trained on pairs of the self-play games'
   states it predicts results 0.0063 better in log-loss than lin1_86's linear evaluation (after
@@ -160,10 +163,12 @@
    evaluation has little leverage left. Then twice the search at the ladder's budget (October
    13-14, `step8.md` section 6): 2 x 500 ms per decision against 2 x 250 ms, level (51.5% ± 2.2%
    over 2,000 games).
-9. Next (`step8.md` section 7): the cheap items, a finer sweep of the leaf scale (1.2-1.6), the
-   exploration constant, the ladder (not run yet; the most informative test left). Before any new
-   leaf evaluation's A/B, check with `tools/compare_picks.py` how often it changes the search's
-   pick.
+9. Done (October 14-15, 2026; `ladder.md`): the ladder. 69-31 over 100 games on the public
+   server, Elo 1162 -> 1869, GXE 38 -> 89.7 (Glicko 1910 ± 42).
+10. Next (`step8.md` section 7, `ladder.md`): more ladder games (the rating was still rising), a
+    set prior from the current generator, a finer sweep of the leaf scale (1.2-1.6), the
+    exploration constant. Before any new leaf evaluation's A/B, check with
+    `tools/compare_picks.py` how often it changes the search's pick.
 
 Two Wang settings tuned on 3v3 battles, which are half as long, were A/B'd on v20: `clip_range_vf`
 (None only gave a faster start) and `gae_lambda` (0.95 was clearly worse). Results in `v20.md`.

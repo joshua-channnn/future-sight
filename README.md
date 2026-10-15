@@ -19,6 +19,10 @@ at Foul Play's default budget (~200 ms per decision), counting actual wins:
 | v20 at 20M steps (greedy), both seats | 1,000 | 81.1% ± 2.4% (step 6's Phase 1 bot: 80.0% ± 1.8% over 2,000) |
 | SimpleHeuristics | 1,000 | 94.4% ± 1.4% (step 6's Phase 1 bot: 91.5% ± 1.7%) |
 
+On the public Showdown ladder (October 14-15, 2026; 100 games at the ladder bot's 2 x 250 ms per
+decision) it went 69-31 and took the account from Elo 1162 to 1869 and GXE 38 to 89.7
+(`agent_docs/ladder.md`).
+
 `models/ppo_pokemon_6v6_v20.pt` (v20, 20M steps from scratch), counting actual wins (`battle.won`):
 
 | Opponent | Games | Win Rate (95% CI) |
@@ -101,11 +105,13 @@ marks moves it guessed you have) and the item it guessed for your Pokémon.
 
 ```bash
 python -m players.ladder_bot
+python -m players.ladder_parallel --concurrent 3 --games 100   # several games at once
 ```
 
 Edit `players/ladder_bot.py` to set your username and password; `--games N` sets the number of games
 and `--model` an older model instead of the search bot. Connects to the public Showdown server and
-queues for ranked Gen 9 Random Battles.
+queues for ranked Gen 9 Random Battles. `players/ladder_parallel.py` runs the same bot with several
+games in progress at once.
 
 ### Evaluate against bots
 
@@ -142,7 +148,8 @@ See the instructions at the top of `eval/foulplay_eval.py`.
 │   ├── v20_player.py                 #   v20/v21 policy / player, and loading of any model as an opponent
 │   ├── ppo_player.py                 #   SB3 inference player (auto-detects v17-v19 models)
 │   ├── play_bot.py                   #   Play against the bot locally
-│   └── ladder_bot.py                 #   Run on the Showdown ladder
+│   ├── ladder_bot.py                 #   Run on the Showdown ladder
+│   └── ladder_parallel.py            #   The same, several games at once
 ├── envs/                             # RL environments
 │   ├── rl_player_v20.py              #   v20 tokens, 14-action mapping, two-agent env
 │   ├── rl_player_v21.py              #   v21: v20's tokens plus battle history, aux labels

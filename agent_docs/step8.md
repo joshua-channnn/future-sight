@@ -318,8 +318,7 @@ swap afterwards (9.4 of 10 GB used), the likely cause, but this wasn't checked.
 - More search per decision isn't measurable either: twice the ladder's budget is level
   (section 6).
 - The cheaper items of `step7.md` section 5: the leaf scale between 1.2 and 1.6, the exploration
-  constant, the ladder. No change since lin1_86 has gained measurably, so the ladder (play
-  against people, not run yet) is the most informative test left.
+  constant. The ladder is done (`ladder.md`): 69-31 over 100 games, Elo 1162 -> 1869, GXE 89.7.
 - Reuse:
   - `mcts_with(..., root_weights)` takes any per-search weights.
   - `option_features_from_strings` does any one-turn lookahead.
