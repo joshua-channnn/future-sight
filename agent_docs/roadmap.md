@@ -1,9 +1,11 @@
 # Roadmap (from the September 2026 review)
 
 ## Where things stand
-- **The ladder (October 14-15, 2026): 69-31 over 100 games** (`ladder.md`). On the public server
-  the search bot took the account from Elo 1162 to 1869 and GXE 38 to 89.7 (Glicko 1910 ± 42).
-  The ladder's top 500 started at 2106.
+- **The ladder (October 14-16, 2026): 181-119 over 300 games in two runs** (`ladder.md`). On the
+  public server the search bot took the account from Elo 1162 to 2227, 172nd in the top 500, and
+  GXE 38 to 88.5 (Glicko 1885 ± 25). The second run (112-88) used the set prior of the current
+  Showdown generator, which misses 1.0% of the opponent Pokémon in recent public replays against
+  the fork's 10.1%. The rating has settled: the bot won 50% of the last 46 games.
 - **Step 8 (matchup weights for the leaf evaluation) is done, with no gain** (`step8.md`). A small
   network sets per-Pokemon leaf weights once per search; trained on pairs of the self-play games'
   states it predicts results 0.0063 better in log-loss than lin1_86's linear evaluation (after
@@ -163,12 +165,15 @@
    evaluation has little leverage left. Then twice the search at the ladder's budget (October
    13-14, `step8.md` section 6): 2 x 500 ms per decision against 2 x 250 ms, level (51.5% ± 2.2%
    over 2,000 games).
-9. Done (October 14-15, 2026; `ladder.md`): the ladder. 69-31 over 100 games on the public
-   server, Elo 1162 -> 1869, GXE 38 -> 89.7 (Glicko 1910 ± 42).
-10. Next (`step8.md` section 7, `ladder.md`): more ladder games (the rating was still rising), a
-    set prior from the current generator, a finer sweep of the leaf scale (1.2-1.6), the
-    exploration constant. Before any new leaf evaluation's A/B, check with
-    `tools/compare_picks.py` how often it changes the search's pick.
+9. Done (October 14-16, 2026; `ladder.md`): the ladder. 69-31 over 100 games on the public
+   server, Elo 1162 -> 1869, GXE 38 -> 89.7 (Glicko 1910 ± 42). Then a set prior from the current
+   Showdown generator (`data/gen9_randbats_set_counts_live.json`; misses 1.0% of the opponent
+   Pokémon in public replays against the fork's 10.1%) and 112-88 over 200 more games: Elo 2227,
+   172nd in the top 500, GXE 88.5 (Glicko 1885 ± 25).
+10. Next (`step8.md` section 7, `ladder.md`): a finer sweep of the leaf scale (1.2-1.6), the
+    exploration constant, and reading Trace, As One, Terapagos's forms and Ditto right in the
+    opponent observations (the current prior's misses). Before any new leaf evaluation's A/B,
+    check with `tools/compare_picks.py` how often it changes the search's pick.
 
 Two Wang settings tuned on 3v3 battles, which are half as long, were A/B'd on v20: `clip_range_vf`
 (None only gave a faster start) and `gae_lambda` (0.95 was clearly worse). Results in `v20.md`.

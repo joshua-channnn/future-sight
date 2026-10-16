@@ -21,6 +21,7 @@ from collections import Counter, defaultdict
 
 import numpy as np
 import poke_engine as pe
+from poke_env.battle.abstract_battle import AbstractBattle
 from poke_env.battle.move import Move
 from poke_env.data import GenData
 from poke_env.player import DefaultBattleOrder, Player
@@ -29,6 +30,35 @@ from envs.rl_player_v20 import action_mask, action_to_order, hold_requests_until
 from search.leaf_eval import evaluator_id, mcts as leaf_mcts
 from search.sampling import get_prior, observations, sample_opponent
 from search.state import build_state, option_to_action, tracker
+
+
+def _skip_unknown_messages():
+    """poke-env raises NotImplementedError on a message type it doesn't know, which abandons the rest
+    of the server's message (it can hold the turn's log). The public server sends types the fork
+    doesn't: |badge| since its ladder seasons (October 2026). This ignores |badge| and skips any
+    other unknown type with a warning, once per type (agent_docs/poke_env_gotchas.md, item 16)."""
+    AbstractBattle.MESSAGES_TO_IGNORE.add("badge")
+    parse = AbstractBattle.parse_message
+    if getattr(parse, "skips_unknown", False):
+        return
+    warned = set()
+
+    @functools.wraps(parse)
+    def parse_message(self, split_message):
+        try:
+            return parse(self, split_message)
+        except NotImplementedError as e:
+            if not e.args or e.args[0] != split_message:
+                raise
+            if split_message[1] not in warned:
+                warned.add(split_message[1])
+                self.logger.warning("skipping |%s| messages, which poke-env doesn't know", split_message[1])
+
+    parse_message.skips_unknown = True
+    AbstractBattle.parse_message = parse_message
+
+
+_skip_unknown_messages()
 
 
 class SearchPolicy:

@@ -19,8 +19,10 @@ at Foul Play's default budget (~200 ms per decision), counting actual wins:
 | v20 at 20M steps (greedy), both seats | 1,000 | 81.1% ± 2.4% (step 6's Phase 1 bot: 80.0% ± 1.8% over 2,000) |
 | SimpleHeuristics | 1,000 | 94.4% ± 1.4% (step 6's Phase 1 bot: 91.5% ± 1.7%) |
 
-On the public Showdown ladder (October 14-15, 2026; 100 games at the ladder bot's 2 x 250 ms per
-decision) it went 69-31 and took the account from Elo 1162 to 1869 and GXE 38 to 89.7
+On the public Showdown ladder (October 14-16, 2026; 300 games in two runs at the ladder bot's
+2 x 250 ms per decision) it went 181-119 and took the account from Elo 1162 to 2227, 172nd in the
+top 500, and GXE 38 to 88.5. The second run (112-88) used the set prior of the current Showdown
+generator, which fits 99% of the opponent Pokémon in recent public replays against the fork's 90%
 (`agent_docs/ladder.md`).
 
 `models/ppo_pokemon_6v6_v20.pt` (v20, 20M steps from scratch), counting actual wins (`battle.won`):
@@ -106,12 +108,15 @@ marks moves it guessed you have) and the item it guessed for your Pokémon.
 ```bash
 python -m players.ladder_bot
 python -m players.ladder_parallel --concurrent 3 --games 100   # several games at once
+nohup caffeinate -i bash tools/ladder_loop.sh 200 logs/ladder_run > logs/ladder_run_loop.log 2>&1 &
 ```
 
 Edit `players/ladder_bot.py` to set your username and password; `--games N` sets the number of games
 and `--model` an older model instead of the search bot. Connects to the public Showdown server and
 queues for ranked Gen 9 Random Battles. `players/ladder_parallel.py` runs the same bot with several
-games in progress at once.
+games in progress at once and the set prior of the current Showdown generator
+(`data/gen9_randbats_set_counts_live.json`). `tools/ladder_loop.sh` plays N more games unattended
+on a MacBook: it starts `ladder_parallel.py` again after the Mac sleeps (`agent_docs/ladder.md`).
 
 ### Evaluate against bots
 

@@ -321,3 +321,11 @@ def get_prior():
     if _PRIOR is None:
         _PRIOR = SetPrior()
     return _PRIOR
+
+
+def use_prior(path):
+    """Makes get_prior() return the prior at `path` instead of PRIOR_PATH, e.g. one built from a
+    current Showdown checkout for the public ladder (players/ladder_parallel.py --set-prior)."""
+    global _PRIOR
+    _PRIOR = SetPrior(path)
+    return _PRIOR

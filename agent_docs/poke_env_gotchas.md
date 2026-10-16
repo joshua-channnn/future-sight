@@ -73,3 +73,18 @@ Found while building v20 (September 2026); v20 handles them, v18/v19 code is lef
 15. **Illusion (Zoroark) breaks both views**: the opponent's disguised Pokémon collects the real
     one's moves and HP, and poke-env's own-team tracking for the Zoroark side goes wrong. About 5%
     of games have a Zoroark; `tools/check_v20_env.py` reports them separately.
+16. **poke-env raises `NotImplementedError` on a message type it doesn't know**, and that abandons
+    the rest of the server's message, which can hold the turn's log. The public server sends types
+    this repo's fork doesn't: `|badge|p2|bronze|gen9randombattle|...` at the start of games since
+    its ladder seasons (October 15, 2026). `search/policy.py` adds `badge` to
+    `AbstractBattle.MESSAGES_TO_IGNORE` and skips any other unknown type, warning once per type. The
+    v20/v21 and SB3 players don't import it, so on the public server they still raise.
+17. **The public server throttles a regular account's messages** (moves, `/search`, `/leave`, chat):
+    one every 600 ms, with up to 5 waiting. It drops any beyond that with `|raw|...Your message was
+    not sent because you've been typing too quickly.`, which poke-env only logs as an unhandled
+    message. A dropped move leaves the game waiting on the timer; a dropped `/search` leaves
+    `Player.ladder` waiting for a game forever. Several games at once can burst past it: each
+    finished game's `/leave`, the next `/utm` and `/search`, `/timer on`, and the other games' moves
+    (October 15, 2026: three games ended within seconds and the run sat idle for 3 hours).
+    `players/ladder_parallel.py` sends at least 0.65 s apart and exits with 3 after 10 minutes with
+    no game in progress. Local servers started with `--no-security` don't throttle (`nothrottle`).

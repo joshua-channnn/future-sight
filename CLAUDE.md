@@ -33,7 +33,9 @@ in `agent_docs/v21.md`):
 
 Step 6 (search at decision time, details in `agent_docs/step6.md`):
 - `search/sampling.py`: the set prior (`data/gen9_randbats_set_counts.json`: complete sets of the
-  fork's generator over 1M teams, built by `tools/build_set_prior.py`) and opponent team sampling.
+  fork's generator over 1M teams, built by `tools/build_set_prior.py`;
+  `data/gen9_randbats_set_counts_live.json`: the same from current Showdown, for the public ladder,
+  `agent_docs/ladder.md`) and opponent team sampling.
 - `search/state.py`: poke-env battle -> poke-engine `State` (`build_state`, `build_true_state` for
   checks, `LogTracker` for what poke-env doesn't keep), engine options -> our 14 actions.
 - `search/policy.py`: `SearchPolicy` (MCTS over sampled opponent teams, Foul Play's recipe; same
@@ -93,7 +95,11 @@ v17-v19 (SB3):
   for self-play opponents and, with `--model <zip>`, `players/play_bot.py` (local play) and
   `players/ladder_bot.py` (both run the search bot by default since October 10, 2026, with step
   7's learned leaf evaluation since October 11). `players/ladder_parallel.py` runs ladder_bot.py
-  with several games at once (`agent_docs/ladder.md`).
+  with several games at once, the live set prior, a stop file, a pause on low battery and messages
+  paced under the server's throttle; `tools/ladder_loop.sh` runs it unattended across the Mac's
+  sleeps (`agent_docs/ladder.md`). `search/policy.py` skips message types poke-env doesn't know
+  (the public server's `|badge|`); `tools/check_prior_replays.py` checks a set prior against
+  recent public replays.
 - `eval/ppo_test.py` (vs Random / SimpleHeuristics / another model) and `eval/foulplay_eval.py`.
 - `envs/rl_player_6v6.py`, `networks/embedding_extractor.py`, `networks/embedding_extractor_sp.py`:
   v17 code, kept only so v17 checkpoints still load.
@@ -156,4 +162,5 @@ v17-v19 (SB3):
   evaluation): `agent_docs/step7.md`; the brief it was built from: `agent_docs/step7_brief.md`
 - step 8 (matchup weights for the leaf evaluation; why better prediction didn't make the search
   stronger): `agent_docs/step8.md`
-- the ladder (results, running several games at once): `agent_docs/ladder.md`
+- the ladder (the runs' results, the current generator's set prior, unattended runs):
+  `agent_docs/ladder.md`
