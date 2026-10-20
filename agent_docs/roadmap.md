@@ -1,11 +1,20 @@
 # Roadmap (from the September 2026 review)
 
 ## Where things stand
-- **The ladder (October 14-16, 2026): 181-119 over 300 games in two runs** (`ladder.md`). On the
-  public server the search bot took the account from Elo 1162 to 2227, 172nd in the top 500, and
-  GXE 38 to 88.5 (Glicko 1885 ± 25). The second run (112-88) used the set prior of the current
+- **The ladder (October 14-16, 2026): 234-165 on the account over three runs** (`ladder.md`). On the
+  public server the search bot took the account from Elo 1162 to 2258, 118th in the top 500, and
+  GXE 38 to 88.6 (Glicko 1885 ± 25). The second run (112-88) used the set prior of the current
   Showdown generator, which misses 1.0% of the opponent Pokémon in recent public replays against
-  the fork's 10.1%. The rating has settled: the bot won 50% of the last 46 games.
+  the fork's 10.1%. The rating has settled: the bot won 53% of the third run's 100 games.
+- **Why it loses on the ladder (October 16, `loss_review.md`).**
+  - **The engine's wrong mechanics:** rare. Each comes up in under 0.5% of self-play decisions,
+    and none decided any of 59 reviewed losses.
+  - **The opponent model:** the search predicts the opponent as its own best response, which
+    under-predicts setup. It gives a boosting move a median share of 17%, against 42% for an
+    attack, and 18 of the 47 recorded losses turned on a setup the bot let happen.
+  - **Close calls:** 27 of the 47 losses had a decisive choice the search rated within 1-3 points.
+  - **Boosts:** lin1_86 does value them (+2 is about 7 points of win chance). It can't see a
+    boosted Pokémon's threat to the rest of the team.
 - **Step 8 (matchup weights for the leaf evaluation) is done, with no gain** (`step8.md`). A small
   network sets per-Pokemon leaf weights once per search; trained on pairs of the self-play games'
   states it predicts results 0.0063 better in log-loss than lin1_86's linear evaluation (after
@@ -169,11 +178,27 @@
    server, Elo 1162 -> 1869, GXE 38 -> 89.7 (Glicko 1910 ± 42). Then a set prior from the current
    Showdown generator (`data/gen9_randbats_set_counts_live.json`; misses 1.0% of the opponent
    Pokémon in public replays against the fork's 10.1%) and 112-88 over 200 more games: Elo 2227,
-   172nd in the top 500, GXE 88.5 (Glicko 1885 ± 25).
-10. Next (`step8.md` section 7, `ladder.md`): a finer sweep of the leaf scale (1.2-1.6), the
-    exploration constant, and reading Trace, As One, Terapagos's forms and Ditto right in the
-    opponent observations (the current prior's misses). Before any new leaf evaluation's A/B,
-    check with `tools/compare_picks.py` how often it changes the search's pick.
+   172nd in the top 500, GXE 88.5 (Glicko 1885 ± 25). Then 53-47 over 100 games that recorded
+   every search decision: Elo 2258, 118th. The losses were reviewed in `loss_review.md`.
+10. Done (October 16, 2026; `loss_review.md`): why it loses. 59 ladder losses were reviewed, 47
+    of them with every search decision recorded, and the engine's wrong mechanics were counted
+    over the 1.1M self-play decisions.
+    - The engine gaps are rare and decided none of the losses.
+    - The opponent the search imagines does: it predicts the opponent as its own best response,
+      and people set up far more. 18 of the 47 losses turned on a setup the bot let happen.
+    - Close calls the search couldn't separate decided 27 of the 47.
+11. Next (`loss_review.md` section 6):
+    - record the engine states in `--record`, to build a position set from people's games;
+    - prune options that can't help;
+    - settle close calls by value, and try the network prior at 0;
+    - a model of how people play, for the opponent's side of the search (the largest; a project);
+    - leaves that see a boosted Pokémon's threat to the rest of the team;
+    - the engine and observation fixes as one batch.
+
+    Still open from before (`step8.md` section 7, `ladder.md`): a finer sweep of the leaf scale
+    (1.2-1.6) and the exploration constant, and reading Trace, As One and Terapagos's forms right.
+    Before any new leaf evaluation's A/B, check with `tools/compare_picks.py` how often it changes
+    the search's pick.
 
 Two Wang settings tuned on 3v3 battles, which are half as long, were A/B'd on v20: `clip_range_vf`
 (None only gave a faster start) and `gae_lambda` (0.95 was clearly worse). Results in `v20.md`.

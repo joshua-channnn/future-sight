@@ -19,11 +19,11 @@ at Foul Play's default budget (~200 ms per decision), counting actual wins:
 | v20 at 20M steps (greedy), both seats | 1,000 | 81.1% ± 2.4% (step 6's Phase 1 bot: 80.0% ± 1.8% over 2,000) |
 | SimpleHeuristics | 1,000 | 94.4% ± 1.4% (step 6's Phase 1 bot: 91.5% ± 1.7%) |
 
-On the public Showdown ladder (October 14-16, 2026; 300 games in two runs at the ladder bot's
-2 x 250 ms per decision) it went 181-119 and took the account from Elo 1162 to 2227, 172nd in the
-top 500, and GXE 38 to 88.5. The second run (112-88) used the set prior of the current Showdown
+On the public Showdown ladder (October 14-16, 2026; three runs at the ladder bot's 2 x 250 ms per
+decision) the account went 234-165, and the bot took it from Elo 1162 to 2258, 118th in the
+top 500, and GXE 38 to 88.6. The second and third runs used the set prior of the current Showdown
 generator, which fits 99% of the opponent Pokémon in recent public replays against the fork's 90%
-(`agent_docs/ladder.md`).
+(`agent_docs/ladder.md`). Why it loses there, from 59 reviewed losses: `agent_docs/loss_review.md`.
 
 `models/ppo_pokemon_6v6_v20.pt` (v20, 20M steps from scratch), counting actual wins (`battle.won`):
 
@@ -117,6 +117,8 @@ queues for ranked Gen 9 Random Battles. `players/ladder_parallel.py` runs the sa
 games in progress at once and the set prior of the current Showdown generator
 (`data/gen9_randbats_set_counts_live.json`). `tools/ladder_loop.sh` plays N more games unattended
 on a MacBook: it starts `ladder_parallel.py` again after the Mac sleeps (`agent_docs/ladder.md`).
+`--record DIR` keeps every game's log and search decision. `python -m tools.review_ladder_games DIR`
+then shows where each loss was lost.
 
 ### Evaluate against bots
 

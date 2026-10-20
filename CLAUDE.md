@@ -99,7 +99,11 @@ v17-v19 (SB3):
   paced under the server's throttle; `tools/ladder_loop.sh` runs it unattended across the Mac's
   sleeps (`agent_docs/ladder.md`). `search/policy.py` skips message types poke-env doesn't know
   (the public server's `|badge|`); `tools/check_prior_replays.py` checks a set prior against
-  recent public replays.
+  recent public replays. `ladder_parallel.py --record DIR` keeps the games' logs and every search
+  decision. `tools/review_ladder_games.py DIR` shows where each loss was lost, the search's
+  calibration and its opponent predictions. `tools/count_engine_gaps.py` counts how often the
+  engine's wrong mechanics come up in the self-play data. `tools/leaf_values.py` shows what a leaf
+  evaluation values, by editing real states one field at a time (`agent_docs/loss_review.md`).
 - `eval/ppo_test.py` (vs Random / SimpleHeuristics / another model) and `eval/foulplay_eval.py`.
 - `envs/rl_player_6v6.py`, `networks/embedding_extractor.py`, `networks/embedding_extractor_sp.py`:
   v17 code, kept only so v17 checkpoints still load.
@@ -164,3 +168,5 @@ v17-v19 (SB3):
   stronger): `agent_docs/step8.md`
 - the ladder (the runs' results, the current generator's set prior, unattended runs):
   `agent_docs/ladder.md`
+- why the ladder bot loses (59 losses reviewed, how often the engine's wrong mechanics come up,
+  what lin1_86 values at the leaves, the fixes to try): `agent_docs/loss_review.md`

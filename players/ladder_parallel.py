@@ -14,6 +14,10 @@ players/ladder_bot.py run on its own uses).
 run ends with its results. Stopping the process instead forfeits the games in progress.
 --min-battery: on battery power below this charge (%), no new games are queued until the Mac is on
 AC power again; the games in progress finish (default 30; 0: off).
+--record DIR: keeps each game's log (DIR/<account> - <battle>.html, poke-env's replay) and, in
+DIR/decisions.jsonl, each search decision (the win chance the search saw, its options' shares and
+win chances, what it expected the opponent to pick: SearchPolicy's explain details) and each game's
+result, for reviewing the games (tools/review_ladder_games.py). Nothing is posted in the battle.
 
 If the server drops the connection (the Mac slept: the lid closed), the games in progress are lost
 and it exits with 3; so it does when no game has been in progress for 10 minutes (the server lost or
@@ -27,6 +31,8 @@ moves of the others): the /search was dropped and the run waited for a game that
 """
 import argparse
 import asyncio
+import json
+import math
 import os
 import re
 import subprocess
@@ -98,6 +104,67 @@ def _pace_messages(client, gap=MESSAGE_GAP):
     client.send_message = send_message
 
 
+def _decision(battle, last, order, scale):
+    """One search decision for --record: SearchPolicy.last (explain on) with the win chances
+    describe_decision gives (mode 2's leaf score inverted: sigmoid(v(root) + logit(q) / scale))."""
+    from search.policy import describe_decision
+    v = last.get("v_root")
+
+    def win(q):
+        if v is None:
+            return None
+        q = min(max(q, 1e-3), 1 - 1e-3)
+        return round(1 / (1 + math.exp(-(v + math.log(q / (1 - q)) / scale))), 3)
+
+    me, opp = battle.active_pokemon, battle.opponent_active_pokemon
+    return {"battle": battle.battle_tag, "turn": battle.turn, "switch_in": bool(battle.force_switch),
+            "active": me.species if me else None, "hp": round(me.current_hp_fraction, 3) if me else None,
+            "opp_active": opp.species if opp else None,
+            "opp_hp": round(opp.current_hp_fraction, 3) if opp else None,
+            "choice": order.message, "win": win(last["value"]),
+            "options": {str(a): [round(s, 3), win(last["q"][a]) if a in last["q"] else None]
+                        for a, s in sorted(last["shares"].items(), key=lambda kv: -kv[1])},
+            "opp_options": {o: round(s, 3) for o, s in sorted(last["opp"].items(), key=lambda kv: -kv[1])
+                            if s >= 0.01},
+            "note": describe_decision(battle, last, order, scale)}
+
+
+def _record(player, folder):
+    """--record: poke-env keeps each game's log in `folder`; decisions.jsonl gets each search
+    decision (SearchPlayer._async_choose_move's explanation, written instead of posted) and each
+    game's result."""
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, "decisions.jsonl")
+    player._save_replays = folder
+    policy = player.policy
+    policy.explain = True
+
+    def write(rec):
+        with open(path, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+
+    async def choose(battle):
+        policy.last = None
+        order = policy.order(battle)
+        if policy.last and "opp" in policy.last:
+            try:
+                write(_decision(battle, policy.last, order, policy.leaf_scale))
+            except Exception as e:  # noqa: BLE001 - a record must never cost the move
+                policy.stats[f"record failed: {type(e).__name__}: {str(e)[:80]}"] += 1
+        return order
+
+    player._async_choose_move = choose
+    finished = player._battle_finished_callback
+
+    def on_finished(battle):
+        finished(battle)
+        write({"battle": battle.battle_tag, "won": battle.won, "turns": battle.turn,
+               "opponent": battle.opponent_username, "rating": battle.rating,
+               "opponent_rating": battle.opponent_rating})
+
+    player._battle_finished_callback = on_finished
+
+
 async def _ladder(player, n_games, run):
     """poke-env's Player._ladder, checking `run` before queuing each game."""
     await player.ps_client.logged_in.wait()
@@ -150,6 +217,8 @@ def main():
                     help="no new games once this file exists; the games in progress finish")
     ap.add_argument("--min-battery", type=int, default=30,
                     help="no new games on battery below this charge (%%) until on AC power; 0: off")
+    ap.add_argument("--record", default=None,
+                    help="keep each game's log and the search's decisions in this folder")
     args, rest = ap.parse_known_args()
     sys.argv = [sys.argv[0]] + rest
     path = args.set_prior or (LIVE_PRIOR if LIVE_PRIOR.exists() else None)
@@ -165,6 +234,8 @@ def main():
         kw.setdefault("max_concurrent_battles", args.concurrent)
         player = make_player(*a, **kw)
         _pace_messages(player.ps_client)
+        if args.record:
+            _record(player, args.record)
         player.ladder = lambda n_games: handle_threaded_coroutines(_ladder(player, n_games, run))
         asyncio.get_running_loop().create_task(_monitor(player, run))
         return player

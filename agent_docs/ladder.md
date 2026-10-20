@@ -2,17 +2,18 @@
 
 The deployed search bot (`players/ladder_bot.py`: step 7's lin1_86 leaf evaluation, 2 x 250 ms per
 decision, the v21 prior and set model, item inference) on the public Showdown server's Gen 9 Random
-Battle ladder, in two runs:
+Battle ladder, in three runs:
 
 | run | games | account record | Elo | GXE | Glicko |
 | --- | --- | --- | --- | --- | --- |
 | 1: October 14-15, 2026, the fork's set prior | 100 | 69-31 | 1162 -> 1869 | 38 -> 89.7 | 1408 ± 35 -> 1910 ± 42 |
 | 2: October 15-16, the current generator's set prior | 200 | 112-88 | 1869 -> 2227 | 89.7 -> 88.5 | 1910 ± 42 -> 1885 ± 25 |
+| 3: October 16, the same, recording every decision | 100 | 53-46 | 2227 -> 2258 | 88.5 -> 88.6 | 1885 ± 25 -> 1885 ± 25 |
 
-After run 2 the account was 172nd in the ladder's top 500 (Elo 2227; #1 had 2546, #100 2277 and
-#500 2107). The rating has settled: the bot won 50% of the last 46 games, and Glicko (which GXE
-comes from) ended level with run 1. Elo, which the ladder ranks by, rose until the bot won about
-half of its games.
+After run 3 the account was 118th in the ladder's top 500 (Elo 2258; #1 had 2535, #100 2274 and
+#500 2107). The rating has settled: the bot won 53% of run 3's games and 50% of run 2's last 46,
+and Glicko (which GXE comes from) has not moved since the end of run 1. Elo, which the ladder ranks
+by, rose until the bot won about half of its games.
 
 ## Run 1: October 14-15 (100 games, the fork's set prior)
 
@@ -125,6 +126,31 @@ when the opponent forfeited (wins on the account) and 2 were lost when the Mac s
   `logs/ladder_search_20261015_live_r2_part1.log` (67-93),
   `logs/ladder_search_20261015_live_r3_part1.log` (94-196). The loop's logs end in `_loop.log`.
 
+## Run 3: October 16 (100 games, recorded)
+
+Run 2's bot and set prior, under `tools/ladder_loop.sh`, with
+`players/ladder_parallel.py --record logs/ladder_games_20261016`. That keeps each game's log and
+every search decision for the loss review (`loss_review.md`).
+
+**Result: the bot's record 53-47. Elo 2227 -> 2258, 118th in the top 500; GXE 88.5 -> 88.6;
+Glicko unchanged at 1885 ± 25.**
+
+| games | wins |
+| --- | --- |
+| 1-25 | 13 |
+| 26-50 | 13 |
+| 51-75 | 12 |
+| 76-100 | 15 |
+
+- All 100 games were complete, with no forfeits and none lost to the Mac sleeping. They averaged
+  27.5 turns.
+- The run took 1 h 57 min in one go. The only warning was poke-env's, about an opponent's name with
+  an apostrophe.
+- The account's page showed 305-276 afterwards, up from 252-230. That's 53-46, one loss short
+  of the bot's count.
+- Logs: `logs/ladder_search_20261016_rec_part1.log` and its `_loop.log`. The records are in
+  `logs/ladder_games_20261016/`.
+
 ## How to run
 
     nohup caffeinate -i bash tools/ladder_loop.sh 200 logs/ladder_run > logs/ladder_run_loop.log 2>&1 &
@@ -144,6 +170,12 @@ when the opponent forfeited (wins on the account) and 2 were lost when the Mac s
   exits with 3, and the loop starts it again.
 - `touch logs/ladder.stop` (the `--stop-file`) stops new games. The games in progress finish and the
   run ends with its results. Stopping the process forfeits the games in progress.
+- `--record DIR` (passed through by the loop) keeps each game's log, as poke-env's replay, and every
+  search decision in `DIR/decisions.jsonl`. Each record has the win chance, the options' shares and
+  win chances, and what the search expected the opponent to pick. Nothing is posted in the battle.
+  - `python3 -m tools.review_ladder_games DIR` shows the turns where each loss was lost, plus the
+    search's calibration and how well it predicted the opponent (`loss_review.md`).
+  - `--game <battle tag> --top 10` shows one game in detail.
 - On battery below 30% (`--min-battery`), it queues no new games until the Mac is on AC power. Run
   it under `caffeinate -i -s`, or the Mac sleeps after a minute idle.
 - The bot's per-battle state is keyed by battle: the trackers are in `WeakKeyDictionary`s, and the
@@ -153,6 +185,7 @@ when the opponent forfeited (wins on the account) and 2 were lost when the Mac s
   `https://pokemonshowdown.com/ladder/gen9randombattle.json`.
 
 ## What next
+- What the losses show, and the fixes they suggest: `loss_review.md`.
 - The rating has settled, so more games would measure the same thing again. A ladder run can't
   measure a change of a few points either (±6.9 at 200 games, against opponents that change with
   the rating), so local evals stay the measure of strength.
